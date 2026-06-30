@@ -129,7 +129,9 @@ public class LuceneReaderManager implements EngineReaderManager<LuceneReader> {
     }
 
     private static Map<Long, String> buildGenerationToSegmentName(CatalogSnapshot catalogSnapshot, List<LeafReaderContext> leaves) {
-        // Index leaves by writer generation → segment name.
+        // Match catalog segments to leaves by writer generation (immutable per-segment), not by file
+        // set: the leaf's .liv files come and go as deletes accumulate, but the writer generation
+        // stamped at segment creation never changes.
         Map<Long, String> generationToLeafSegment = new HashMap<>(leaves.size());
         for (LeafReaderContext lrc : leaves) {
             SegmentReader sr = (SegmentReader) lrc.reader();
