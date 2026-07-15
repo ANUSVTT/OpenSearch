@@ -58,6 +58,7 @@ pub mod stats;
 pub mod task_monitors;
 pub mod scoped_index_optimizer;
 pub mod scoped_page_index_reader;
+pub mod unnest_consumer;
 
 // Path aliases — old module names still resolve unchanged.
 pub use cache::statistics_cache;
