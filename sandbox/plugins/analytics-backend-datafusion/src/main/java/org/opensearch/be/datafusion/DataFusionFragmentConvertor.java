@@ -733,32 +733,38 @@ public class DataFusionFragmentConvertor implements FragmentConvertor {
                 }
             }
 
-            // Build the final plan: Project(emit) over ExtensionSingleRel over ReadRel
-            io.substrait.proto.ProjectRel finalProject = io.substrait.proto.ProjectRel.newBuilder()
-                .setCommon(io.substrait.proto.RelCommon.newBuilder()
-                    .setEmit(emitBuilder)
-                    .build())
-                .setInput(unnestRel)
-                .build();
+            // No emit/project — let the unnest return all columns.
+            // Root.names describes the full post-unnest output; the Java coordinator
+            // picks the columns it needs by matching against the plan's row type.
+            io.substrait.proto.Rel projectRel = unnestRel;
 
-            io.substrait.proto.Rel projectRel = io.substrait.proto.Rel.newBuilder()
-                .setProject(finalProject)
-                .build();
-
-            // Build output names for the Root
+            // Build output names for the Root — must match the FULL post-unnest schema.
+            // After double-unnest of array column at index K with S struct fields:
+            //   [struct_field_0, struct_field_1, ..., cols_after_array...]
+            // The array column is replaced by its S struct fields in-place.
             List<String> outputNames = new ArrayList<>();
-            for (int col = 0; col < info.unnestFieldIndices().length; col++) {
-                int unnestFieldIdx = info.unnestFieldIndices()[col];
-                if (unnestFieldIdx >= 0) {
-                    outputNames.add(info.structFieldNames().get(unnestFieldIdx));
-                } else {
-                    outputNames.add(root.getNames(col < root.getNamesCount() ? col : 0));
+            io.substrait.proto.NamedStruct baseSchema = findReadRel(topRel) != null
+                ? findReadRel(topRel).getRead().getBaseSchema() : null;
+            if (baseSchema != null) {
+                // Walk the original schema and expand the array column into struct field names
+                int nameIdx = 0;
+                for (int col2 = 0; col2 < baseSchema.getStruct().getTypesCount(); col2++) {
+                    if (col2 == arrayColIdx) {
+                        // This is the array column — replace with struct field names
+                        for (String sf : info.structFieldNames()) {
+                            outputNames.add(info.arrayColumnName() + "." + sf);
+                        }
+                        // Skip the nested names in the original schema (array + struct fields)
+                        nameIdx++; // skip array name itself
+                        nameIdx += info.structFieldNames().size(); // skip struct field names
+                    } else {
+                        outputNames.add(baseSchema.getNames(nameIdx));
+                        nameIdx++;
+                    }
                 }
-            }
-            // Use the original root names if available
-            List<String> rootNames = root.getNamesList();
-            if (!rootNames.isEmpty()) {
-                outputNames = rootNames;
+            } else {
+                // Fallback: use original root names
+                outputNames.addAll(root.getNamesList());
             }
 
             io.substrait.proto.RelRoot newRoot = io.substrait.proto.RelRoot.newBuilder()
