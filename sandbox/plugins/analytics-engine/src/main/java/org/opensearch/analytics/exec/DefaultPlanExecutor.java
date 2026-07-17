@@ -261,14 +261,30 @@ public class DefaultPlanExecutor extends HandledTransportAction<AnalyticsQueryRe
             preferMetadataDriver
         );
         plannerContext.setPlannerSettings(plannerSettings);
+
+        System.out.println("shreanu relnode plan : 1 : logicalFragment : " + logicalFragment + " and planner context: " + plannerContext);
+
         RelNode plan = PlannerImpl.createPlan(logicalFragment, plannerContext);
+
+        System.out.println("shreanu relnode plan : 1 : plan : " + plan);
+        logger.info("[NESTED-POC] ====== DefaultPlanExecutor: After PlannerImpl.createPlan() ======");
+        logger.info("[NESTED-POC] Final optimized plan:\n{}", RelOptUtil.toString(plan));
+        logger.info("[NESTED-POC] Final plan row type: {}", plan.getRowType());
+
         final String fullPlan = profile ? RelOptUtil.toString(plan) : null;
         QueryDAG dag = DAGBuilder.build(plan, capabilityRegistry, clusterService, indexNameExpressionResolver);
+
+        System.out.println("shreanu QueryDAG dag : " + dag.toString());
+        logger.info("[NESTED-POC] ====== DefaultPlanExecutor: QueryDAG built ======");
+        logger.info("[NESTED-POC] QueryDAG:\n{}", dag);
+
         PlanForker.forkAll(dag, capabilityRegistry);
         BackendPlanAdapter.adaptAll(dag, capabilityRegistry);
         // Collapse multi-backend stages to a single chosen alternative before conversion
         // so the convertor runs once per stage and the wire request carries one PlanAlternative.
         PlanAlternativeSelector.selectAll(dag, capabilityRegistry, preferMetadataDriver);
+
+        // SUBSTRAIT CONVERSION (RelNode → Protobuf Bytes)
         FragmentConversionDriver.convertAll(dag, capabilityRegistry);
         final long planningTimeNanos = System.nanoTime() - planStartNanos;
         final long planningTimeMs = TimeUnit.NANOSECONDS.toMillis(planningTimeNanos);

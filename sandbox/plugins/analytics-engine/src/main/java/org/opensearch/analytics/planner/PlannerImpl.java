@@ -46,7 +46,10 @@ import org.opensearch.analytics.planner.rules.OpenSearchFilterRule;
 import org.opensearch.analytics.planner.rules.OpenSearchJoinRule;
 import org.opensearch.analytics.planner.rules.OpenSearchJoinSplitRule;
 import org.opensearch.analytics.planner.rules.OpenSearchLateMaterializationRewriter;
+import org.opensearch.analytics.planner.rules.OpenSearchNestedFieldRewriter;
 import org.opensearch.analytics.planner.rules.OpenSearchProjectRule;
+import org.opensearch.analytics.planner.rules.OpenSearchCorrelateRule;
+import org.opensearch.analytics.planner.rules.OpenSearchUncollectRule;
 import org.opensearch.analytics.planner.rules.OpenSearchSortPushdownRewriter;
 import org.opensearch.analytics.planner.rules.OpenSearchSortRule;
 import org.opensearch.analytics.planner.rules.OpenSearchSortSplitRule;
@@ -118,18 +121,36 @@ public class PlannerImpl {
      * Package-private so planner rule tests can inspect the marked+optimized tree.
      */
     public static RelNode runAllOptimizations(RelNode rawRelNode, PlannerContext context) {
-        LOGGER.debug("Input RelNode:\n{}", RelOptUtil.toString(rawRelNode));
+        LOGGER.info("[NESTED-POC] ====== PlannerImpl.runAllOptimizations START ======");
+        LOGGER.info("[NESTED-POC] Input RelNode:\n{}", RelOptUtil.toString(rawRelNode));
+        LOGGER.info("[NESTED-POC] Input RelNode row type: {}", rawRelNode.getRowType());
 
         RuleProfilingListener listener = context.isProfilingEnabled() ? new RuleProfilingListener() : null;
 
+        // NestedDocSupportGap2 : add rule here
         RelNode modifiedRelNode = rawRelNode;
         modifiedRelNode = removeSubQueries(modifiedRelNode, listener);
+        LOGGER.info("[NESTED-POC] After removeSubQueries:\n{}", RelOptUtil.toString(modifiedRelNode));
+
         modifiedRelNode = extractLiteralAgg(modifiedRelNode, listener);
         modifiedRelNode = reduceExpressions(modifiedRelNode, listener);
         modifiedRelNode = pushdownRules(modifiedRelNode, listener);
+        LOGGER.info("[NESTED-POC] After pushdownRules:\n{}", RelOptUtil.toString(modifiedRelNode));
+
         modifiedRelNode = decomposeAggregates(modifiedRelNode, listener);
+        LOGGER.info("[NESTED-POC] After decomposeAggregates:\n{}", RelOptUtil.toString(modifiedRelNode));
+
+        // POC nested (N1): SKIP the Correlate+Uncollect injection here.
+        // ITEM($0,'author') passes through mark+CBO unchanged (no Exchange inserted).
+        // The CorrelateUncollectRewriter in preprocessForSubstrait detects ITEM on ARRAY
+        // and builds the ExtensionSingleRel directly in the Substrait proto.
+        LOGGER.info("[NESTED-POC] Skipping nested field rewrite (handled in Substrait emission)");
+
+        LOGGER.info("[NESTED-POC] Before mark()");
+        LOGGER.info("[NESTED-POC] RelNode entering mark():\n{}", RelOptUtil.toString(modifiedRelNode));
+
         modifiedRelNode = mark(modifiedRelNode, context, listener);
-        LOGGER.debug("After marking:\n{}", RelOptUtil.toString(modifiedRelNode));
+        LOGGER.info("[NESTED-POC] After marking:\n{}", RelOptUtil.toString(modifiedRelNode));
         modifiedRelNode = splitAggLiteralArgProject(modifiedRelNode, listener);
         // TODO(combine-delegated-predicates): a post-marking HEP rule should fuse same-backend
         // AND-sibling AnnotatedPredicates into one combined predicate per group, collapsing N
@@ -141,7 +162,8 @@ public class PlannerImpl {
         // Revisit once those are designed. The rule would also strip performance peers from
         // AnnotatedPredicates under OR/NOT (Lucene call buys nothing in those positions).
         modifiedRelNode = cbo(modifiedRelNode, rawRelNode, context, listener);
-        LOGGER.debug("After CBO:\n{}", RelOptUtil.toString(modifiedRelNode));
+        LOGGER.info("[NESTED-POC] After CBO:\n{}", RelOptUtil.toString(modifiedRelNode));
+        LOGGER.info("[NESTED-POC] After CBO row type: {}", modifiedRelNode.getRowType());
         Optional<RelNode> lateMat = OpenSearchLateMaterializationRewriter.rewrite(modifiedRelNode);
         if (lateMat.isPresent()) {
             modifiedRelNode = lateMat.get();
@@ -382,6 +404,7 @@ public class PlannerImpl {
      * optimization.
      */
 
+    // TODOCHECk :
     private static RelNode mark(RelNode input, PlannerContext context, RuleProfilingListener listener) {
         return HepPhase.named("marking")
             .bottomUp()
@@ -394,7 +417,9 @@ public class PlannerImpl {
                     new OpenSearchJoinRule(context),
                     new OpenSearchSortRule(context),
                     new OpenSearchUnionRule(context),
-                    new OpenSearchValuesRule(context)
+                    new OpenSearchValuesRule(context),
+                    new OpenSearchCorrelateRule(context),
+                    new OpenSearchUncollectRule(context)
                 )
             )
             .run(input, listener);

@@ -8,6 +8,7 @@
 
 package org.opensearch.ppl.action;
 
+import org.apache.calcite.plan.RelOptUtil;
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.type.RelDataTypeField;
 import org.apache.calcite.schema.SchemaPlus;
@@ -69,7 +70,12 @@ public class UnifiedQueryService {
         // Wrap the SchemaPlus in a delegating AbstractSchema that preserves lazy table resolution.
         // The underlying OpenSearchSchemaBuilder resolves wildcard/comma/exclusion expressions
         // lazily via getTable(name) — a static copy would lose that.
-        SchemaPlus schemaPlus = contextProvider.getContext().schema();
+        SchemaPlus schemaPlus = contextProvider.getContext().schema(); // this needs the nested doc
+        System.out.println("shreanu uqs : " + pplText);
+        System.out.println("shreanu schemaPlus : " + schemaPlus.toString());
+        System.out.println("[NESTED-POC] UnifiedQueryService.execute() called with query: " + pplText);
+        System.out.println("[NESTED-POC] SchemaPlus tableNames: " + schemaPlus.getTableNames());
+
         AbstractSchema delegatingSchema = new AbstractSchema() {
             @Override
             protected Map<String, Table> getTableMap() {
@@ -115,8 +121,26 @@ public class UnifiedQueryService {
 
             // Log what the context's root schema looks like
             logger.info("[UnifiedQueryService] Context built, planning PPL: {}", pplText);
+
+            System.out.println("shreanu Stop 2");
             UnifiedQueryPlanner planner = new UnifiedQueryPlanner(context);
-            RelNode logicalPlan = planner.plan(pplText);
+            RelNode logicalPlan = planner.plan(pplText); // WILL FAIL Without nested index : this should pass once we set the schema
+            //  The UnifiedQueryPlanner (built on Apache Calcite) has a PPL grammar that maps each PPL pipe command
+            //  to the corresponding Calcite LogicalXxx node. This is hardcoded in the parser:
+
+            System.out.println("shreanu Stop 3");
+
+            // ===== NESTED-POC LOGGING =====
+            logger.info("[NESTED-POC] ====== UnifiedQueryPlanner.plan() OUTPUT ======");
+            logger.info("[NESTED-POC] Query: {}", pplText);
+            logger.info("[NESTED-POC] RelNode class: {}", logicalPlan.getClass().getSimpleName());
+            logger.info("[NESTED-POC] RelNode row type: {}", logicalPlan.getRowType());
+            logger.info("[NESTED-POC] RelNode tree:\n{}", org.apache.calcite.plan.RelOptUtil.toString(logicalPlan));
+            for (RelDataTypeField field : logicalPlan.getRowType().getFieldList()) {
+                logger.info("[NESTED-POC]   Column: {} -> type: {} (sqlTypeName: {})",
+                    field.getName(), field.getType(), field.getType().getSqlTypeName());
+            }
+            logger.info("[NESTED-POC] ====== END UnifiedQueryPlanner OUTPUT ======");
 
             // Extract column names from the RelNode's row type
             List<RelDataTypeField> fields = logicalPlan.getRowType().getFieldList();
@@ -150,6 +174,7 @@ public class UnifiedQueryService {
             // (e.g. CircuitBreakingException) is handled by DefaultPlanExecutor's
             // convertingListener without being wrapped in ProfiledResult.
             PlainActionFuture<Iterable<Object[]>> future = new PlainActionFuture<>();
+            System.out.println("shreanu exeutor step logicalPlan : " + logicalPlan + " and queryCtx : " + queryCtx);
             planExecutor.execute(logicalPlan, queryCtx, future);
             Iterable<Object[]> results = future.actionGet();
 

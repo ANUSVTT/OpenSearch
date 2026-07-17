@@ -73,8 +73,20 @@ public class OpenSearchTableScanRule extends RelOptRule {
 
         // TODO : This expects the FrontEnds to attach the row type with all fields.
         // TODO : How will they attach if we perform the index resolution
-        List<String> fieldNames = scan.getRowType().getFieldList().stream().map(RelDataTypeField::getName).toList();
-        List<FieldStorageInfo> fieldStorage = fieldStorageResolver.resolve(fieldNames);
+        // POC nested (N1): ARRAY-typed columns (nested fields) don't have traditional field storage
+        // entries in the resolver. Resolve only scalar fields, then insert synthetic placeholder
+        // entries for ARRAY fields at their correct positions so indices stay aligned with the row type.
+        List<RelDataTypeField> allFields = scan.getRowType().getFieldList();
+        List<FieldStorageInfo> fieldStorage = new java.util.ArrayList<>(allFields.size());
+        for (RelDataTypeField field : allFields) {
+            if (field.getType().getSqlTypeName() == org.apache.calcite.sql.type.SqlTypeName.ARRAY) {
+                // Synthetic entry for nested ARRAY column — treated as DataFusion-readable
+                fieldStorage.add(FieldStorageInfo.derivedColumn(field.getName(), field.getType().getSqlTypeName()));
+            } else {
+                List<FieldStorageInfo> resolved = fieldStorageResolver.resolve(List.of(field.getName()));
+                fieldStorage.add(resolved.get(0));
+            }
+        }
 
         // Viable backends: must be able to read ALL requested fields
         // (natively via doc values or via delegation to another backend that can read the field)
@@ -117,9 +129,9 @@ public class OpenSearchTableScanRule extends RelOptRule {
         boolean metadataOnlyCoversAny = false;
         for (FieldStorageInfo field : fieldStorage) {
             if (field.isDerived()) {
-                throw new IllegalStateException(
-                    "TableScan encountered derived field [" + field.getFieldName() + "] — derived fields cannot appear in a scan"
-                );
+                // POC nested (N1): ARRAY-typed nested fields are represented as derived placeholders.
+                // Skip them in the viability check — they're handled by DataFusion natively.
+                continue;
             }
             List<String> dvBackends = registry.scanBackendsForField(field);
             // Index-scan viability must respect the backend's declared supported field types, not

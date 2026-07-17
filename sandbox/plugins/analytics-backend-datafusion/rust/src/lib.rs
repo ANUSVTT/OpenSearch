@@ -57,6 +57,7 @@ pub mod stats;
 pub mod task_monitors;
 pub mod udaf;
 pub mod udf;
+pub(crate) mod unnest_consumer;
 pub mod udwf;
 
 // Path aliases — old module names still resolve unchanged.

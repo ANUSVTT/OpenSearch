@@ -39,6 +39,9 @@ public class DatafusionSearchExecEngine implements SearchExecEngine<ShardScanExe
     public void prepare(ShardScanExecutionContext requestContext) {
         byte[] substraitBytes = requestContext.getFragmentBytes();
         long contextId = datafusionContext.task() != null ? datafusionContext.task().getId() : 0L;
+        org.apache.logging.log4j.LogManager.getLogger(DatafusionSearchExecEngine.class).info(
+            "[NESTED-POC] DataFusion backend received fragment for table [{}]: {} substrait bytes, contextId={}",
+            requestContext.getTableName(), substraitBytes.length, contextId);
         datafusionContext.setDatafusionQuery(new DatafusionQuery(requestContext.getTableName(), substraitBytes, contextId));
     }
 

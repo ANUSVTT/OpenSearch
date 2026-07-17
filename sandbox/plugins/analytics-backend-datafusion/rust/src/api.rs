@@ -1689,7 +1689,7 @@ fn derive_schema_from_partial_plan(
         })
         .unwrap_or_default();
 
-    let logical_plan = futures::executor::block_on(from_substrait_plan(&session_state, &plan))?;
+    let logical_plan = futures::executor::block_on(crate::unnest_consumer::from_substrait_plan_unnest_aware(&session_state, &plan))?;
     let physical_plan =
         futures::executor::block_on(session_state.create_physical_plan(&logical_plan))?;
 

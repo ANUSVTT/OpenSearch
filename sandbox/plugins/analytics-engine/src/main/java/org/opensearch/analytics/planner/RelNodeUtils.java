@@ -32,7 +32,9 @@ import org.opensearch.analytics.planner.rel.OpenSearchJoin;
 import org.opensearch.analytics.planner.rel.OpenSearchProject;
 import org.opensearch.analytics.planner.rel.OpenSearchSort;
 import org.opensearch.analytics.planner.rel.OpenSearchTableScan;
+import org.opensearch.analytics.planner.rel.OpenSearchUncollect;
 import org.opensearch.analytics.planner.rel.OpenSearchUnion;
+import org.opensearch.analytics.planner.rel.OpenSearchCorrelate;
 import org.opensearch.analytics.planner.rel.OpenSearchValues;
 import org.opensearch.analytics.spi.FieldStorageInfo;
 import org.opensearch.core.common.Strings;
@@ -123,6 +125,26 @@ public class RelNodeUtils {
             return new OpenSearchUnion(newCluster, newTraits, newInputs, union.all, union.getViableBackends());
         } else if (node instanceof OpenSearchValues values) {
             return new OpenSearchValues(newCluster, newTraits, values.getRowType(), values.getTuples(), values.getViableBackends());
+        } else if (node instanceof OpenSearchCorrelate correlate) {
+            return new OpenSearchCorrelate(
+                newCluster,
+                newTraits,
+                newInputs.get(0),
+                newInputs.get(1),
+                correlate.getCorrelationId(),
+                correlate.getRequiredColumns(),
+                correlate.getJoinType(),
+                correlate.getViableBackends()
+            );
+        } else if (node instanceof OpenSearchUncollect uncollect) {
+            return new OpenSearchUncollect(
+                newCluster,
+                newTraits,
+                newInputs.getFirst(),
+                uncollect.withOrdinality,
+                uncollect.getItemAliases(),
+                uncollect.getViableBackends()
+            );
         } else if (node instanceof OpenSearchExchangeReducer reducer) {
             return new OpenSearchExchangeReducer(
                 newCluster,

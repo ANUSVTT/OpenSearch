@@ -130,12 +130,13 @@ public class FragmentConversionDriver {
             List<InstructionNode> instructions = assembleInstructions(backend, plan, treeShape, delegationBytes);
 
             converted.add(plan.withConvertedBytes(bytes, delegated).withInstructions(instructions));
-            LOGGER.debug(
-                "Stage [{}] converted: treeShape={}, delegatedExpressions={}{}",
+            LOGGER.info(
+                "[NESTED-POC] Stage [{}] converted: substraitBytes={}, treeShape={}, delegatedExpressions={}, instructions={}",
                 plan.backendId(),
+                bytes.length,
                 treeShape,
                 delegated.size(),
-                delegated.isEmpty() ? "" : " [ids=" + delegated.stream().map(d -> String.valueOf(d.getAnnotationId())).toList() + "]"
+                instructions
             );
         }
         stage.setPlanAlternatives(converted);

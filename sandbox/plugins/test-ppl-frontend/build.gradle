@@ -56,6 +56,13 @@ configurations {
   compileClasspath { exclude group: 'com.google.guava' }
   testCompileClasspath { exclude group: 'com.google.guava' }
 }
+// Force resolution of dependency conflicts introduced by unified-query SNAPSHOT bumps
+configurations.all {
+  resolutionStrategy {
+    force 'com.jayway.jsonpath:json-path:2.9.0'
+    force 'org.apache.calcite.avatica:avatica-core:1.27.0'
+  }
+}
 sourceSets.main.compileClasspath += configurations.calciteCompile
 sourceSets.test.compileClasspath += configurations.calciteCompile
 

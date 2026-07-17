@@ -17,6 +17,7 @@ import org.apache.calcite.rel.RelNode;
 import org.opensearch.analytics.planner.PlannerContext;
 import org.opensearch.analytics.planner.rel.AggregateMode;
 import org.opensearch.analytics.planner.rel.OpenSearchAggregate;
+import org.opensearch.analytics.planner.rel.OpenSearchCorrelate;
 import org.opensearch.analytics.planner.rel.OpenSearchDistribution;
 import org.opensearch.analytics.planner.rel.OpenSearchDistributionTraitDef;
 import org.opensearch.analytics.planner.rel.OpenSearchFilter;
@@ -102,7 +103,8 @@ public class OpenSearchDistributionDeriveRule extends RelOptRule {
         if (!(rel instanceof OpenSearchFilter
             || rel instanceof OpenSearchProject
             || rel instanceof OpenSearchSort
-            || rel instanceof OpenSearchAggregate)) return false;
+            || rel instanceof OpenSearchAggregate
+            || rel instanceof OpenSearchCorrelate)) return false;
         // SINGLE aggregates should NOT be derived to EXECUTION(SINGLETON): that would
         // bypass {@link OpenSearchAggregateSplitRule}'s PARTIAL/FINAL decomposition and
         // ship raw rows to coord instead of pre-aggregating. PARTIAL and FINAL CAN be

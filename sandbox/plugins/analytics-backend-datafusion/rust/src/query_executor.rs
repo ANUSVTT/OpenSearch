@@ -19,6 +19,8 @@ use datafusion::{
 };
 use datafusion_substrait::logical_plan::consumer::from_substrait_plan;
 use log::error;
+
+use crate::unnest_consumer::from_substrait_plan_unnest_aware;
 use native_bridge_common::log_debug;
 use object_store::ObjectMeta;
 use object_store::ObjectStore;
@@ -148,7 +150,7 @@ async fn build_dataframe(
     // Standard user-search flow: Substrait → logical plan → DataFrame.
     let substrait_plan = Plan::decode(plan_bytes)
         .map_err(|e| DataFusionError::Execution(format!("Failed to decode Substrait: {}", e)))?;
-    let logical_plan = from_substrait_plan(&ctx.state(), &substrait_plan).await?;
+    let logical_plan = from_substrait_plan_unnest_aware(&ctx.state(), &substrait_plan).await?;
     ctx.execute_logical_plan(logical_plan).await
 }
 

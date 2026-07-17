@@ -91,6 +91,12 @@ public class FieldStorageResolver {
                 }
                 throw new IllegalStateException("Field [" + fieldName + "] has no type in mapping");
             }
+            // POC nested (N1): skip "nested" type fields — they're stored as LIST<STRUCT> in Parquet
+            // and have no traditional field storage entry. The Calcite schema registers them as
+            // ARRAY(ROW(...)) which the planner handles separately via the UNNEST rewrite.
+            if ("nested".equals(fieldType)) {
+                continue;
+            }
             this.fieldStorage.put(fieldName, resolveField(fieldName, fieldType, fieldProps, primaryFormat, luceneAvailable));
         }
     }
