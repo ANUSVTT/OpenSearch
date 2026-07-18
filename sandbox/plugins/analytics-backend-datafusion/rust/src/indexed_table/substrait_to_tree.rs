@@ -94,11 +94,18 @@ pub struct ExtractionResult {
 /// Extract the scan-level filter from a logical plan, skipping HAVING/window
 /// filters that sit above Aggregate or Window nodes (those reference derived
 /// columns that `expr_to_bool_tree` cannot resolve against the base schema).
+/// Also skips filters above Unnest nodes (post-unnest columns don't match the
+/// base parquet schema).
 pub fn extract_filter_expr(plan: &LogicalPlan) -> Option<Expr> {
     match plan {
+        // Don't descend into Unnest — filters below reference post-unnest columns
+        LogicalPlan::Unnest(_) => None,
         LogicalPlan::Filter(filter) => {
             if has_aggregate_or_window_below(&filter.input) {
                 extract_filter_expr(&filter.input)
+            } else if has_unnest_below(&filter.input) {
+                // Filter above unnest references post-unnest columns; skip it
+                None
             } else {
                 Some(filter.predicate.clone())
             }
@@ -111,6 +118,19 @@ pub fn extract_filter_expr(plan: &LogicalPlan) -> Option<Expr> {
             }
             None
         }
+    }
+}
+
+/// Returns true if any Unnest node exists below the given plan node.
+fn has_unnest_below(plan: &LogicalPlan) -> bool {
+    match plan {
+        LogicalPlan::Unnest(_) => true,
+        LogicalPlan::Projection(p) => has_unnest_below(&p.input),
+        LogicalPlan::Filter(f) => has_unnest_below(&f.input),
+        LogicalPlan::Sort(s) => has_unnest_below(&s.input),
+        LogicalPlan::Limit(l) => has_unnest_below(&l.input),
+        LogicalPlan::SubqueryAlias(s) => has_unnest_below(&s.input),
+        _ => false,
     }
 }
 

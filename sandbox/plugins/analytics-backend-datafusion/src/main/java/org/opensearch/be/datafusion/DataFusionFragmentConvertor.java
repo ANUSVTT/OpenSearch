@@ -485,6 +485,22 @@ public class DataFusionFragmentConvertor implements FragmentConvertor {
     @Override
     public byte[] convertFragment(RelNode fragment) {
         LOGGER.debug("Converting fragment [{}]", fragment.getClass().getSimpleName());
+
+        // [NESTED-POC] If N1 bypass is active, use N1SubstraitBuilder to hand-build
+        // the complete Substrait plan (including UNNEST + Filter/Aggregate + semi-join).
+        org.opensearch.analytics.N1Descriptor n1 = org.opensearch.analytics.NestedPocOverride.get();
+        LOGGER.info("[NESTED-POC] convertFragment: NestedPocOverride.get() = {} (thread={})",
+            n1 != null ? "PRESENT" : "null", Thread.currentThread().getName());
+        if (n1 != null) {
+            byte[] bytes = N1SubstraitBuilder.build(n1, SCHEMA_ONLY_TYPE_PROTO_CONVERTER);
+            LOGGER.info("[NESTED-POC] convertFragment: N1SubstraitBuilder built {} bytes for index [{}], " +
+                "unnestPath={}, predicate={}, projection={}, aggregate={}",
+                bytes.length, n1.indexName(), n1.unnestPath(), n1.predicate(),
+                n1.projection(), n1.aggregate());
+            org.opensearch.analytics.NestedPocOverride.clear(); // consume once
+            return bytes;
+        }
+
         RelNode rewritten = rewriteStageInputScans(fragment);
         return convertToSubstrait(rewritten);
     }

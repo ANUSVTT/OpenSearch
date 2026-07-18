@@ -238,6 +238,13 @@ public class DefaultPlanExecutor extends HandledTransportAction<AnalyticsQueryRe
         RelMetadataQueryBase.THREAD_PROVIDERS.set(JaninoRelMetadataProvider.of(logicalFragment.getCluster().getMetadataProvider()));
         logicalFragment.getCluster().invalidateMetadataQuery();
 
+        // [NESTED-POC] Propagate N1Descriptor from QueryRequestContext to this worker thread.
+        // The PPL service sets it on the request thread but convertFragment runs on a search worker.
+        if (queryCtx != null && queryCtx.n1Descriptor() != null) {
+            org.opensearch.analytics.NestedPocOverride.set(queryCtx.n1Descriptor());
+            logger.info("[NESTED-POC] DefaultPlanExecutor: set N1Descriptor on worker thread");
+        }
+
         // Create the slow log wrapper at the start so it observes the full query lifecycle.
         final String querySource = queryCtx != null ? queryCtx.querySource() : null;
         final AnalyticsSearchSlowLog.QuerySlowLogListener queryListener = analyticsSearchSlowLog.createQueryListener(querySource);
@@ -284,8 +291,14 @@ public class DefaultPlanExecutor extends HandledTransportAction<AnalyticsQueryRe
         // so the convertor runs once per stage and the wire request carries one PlanAlternative.
         PlanAlternativeSelector.selectAll(dag, capabilityRegistry, preferMetadataDriver);
 
+        // [NESTED-POC] Set N1Descriptor on THIS thread right before conversion.
+        // convertFragment runs on this same thread (convertAll is synchronous).
+        if (queryCtx != null && queryCtx.n1Descriptor() != null) {
+            org.opensearch.analytics.NestedPocOverride.set(queryCtx.n1Descriptor());
+        }
         // SUBSTRAIT CONVERSION (RelNode → Protobuf Bytes)
         FragmentConversionDriver.convertAll(dag, capabilityRegistry);
+        org.opensearch.analytics.NestedPocOverride.clear(); // clean up after conversion
         final long planningTimeNanos = System.nanoTime() - planStartNanos;
         final long planningTimeMs = TimeUnit.NANOSECONDS.toMillis(planningTimeNanos);
         logger.debug("[DefaultPlanExecutor] QueryDAG:\n{}", dag);
@@ -355,7 +368,21 @@ public class DefaultPlanExecutor extends HandledTransportAction<AnalyticsQueryRe
             listener
         );
 
-        final List<String> outputColumnOrder = logicalFragment.getRowType().getFieldNames();
+        // [NESTED-POC] For N1 nested queries, the output columns come from the N1Descriptor
+        // (not from the bare scan's row type). The N1SubstraitBuilder produces a different output schema.
+        final List<String> outputColumnOrder;
+        if (queryCtx != null && queryCtx.n1Descriptor() != null) {
+            org.opensearch.analytics.N1Descriptor n1d = queryCtx.n1Descriptor();
+            if (n1d.aggregate() != null) {
+                outputColumnOrder = n1d.aggregate().outputColumns();
+            } else if (!n1d.projection().isEmpty()) {
+                outputColumnOrder = n1d.projection();
+            } else {
+                outputColumnOrder = logicalFragment.getRowType().getFieldNames();
+            }
+        } else {
+            outputColumnOrder = logicalFragment.getRowType().getFieldNames();
+        }
         // No taskManager.unregister here: the framework (HandledTransportAction) unregisters the
         // task it created for doExecute once this listener settles. Unregistering it ourselves
         // would double-free a task we no longer own.

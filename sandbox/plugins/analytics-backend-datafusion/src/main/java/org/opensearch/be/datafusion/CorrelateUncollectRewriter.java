@@ -76,6 +76,14 @@ final class CorrelateUncollectRewriter {
      * If no ITEM calls on ARRAY columns are found, returns the input unchanged.
      */
     static RelNode rewrite(RelNode root) {
+        // PATH A: Handle Correlate+Uncollect that PPL's "expand" command already injected.
+        // The tree looks like: Project → Correlate(Scan, Uncollect) or Filter → Correlate(Scan, Uncollect)
+        RelNode correlateResult = tryRewriteExistingCorrelate(root);
+        if (correlateResult != null) {
+            return correlateResult;
+        }
+
+        // PATH B: Handle ITEM/array_element on ARRAY columns (from "fields comments.author")
         if (!(root instanceof LogicalProject project)) {
             return root;
         }
@@ -178,6 +186,108 @@ final class CorrelateUncollectRewriter {
             arrayField.getName());
 
         return input;
+    }
+
+    /**
+     * PATH A: Detects a Correlate+Uncollect already in the tree (from PPL "expand" command).
+     * Extracts the array column name, stores UnnestInfo, returns the scan.
+     * Returns null if no Correlate+Uncollect found.
+     */
+    private static RelNode tryRewriteExistingCorrelate(RelNode root) {
+        // Walk through Project/Filter to find a Correlate
+        org.apache.calcite.rel.core.Correlate correlate = findCorrelate(root);
+        if (correlate == null) return null;
+
+        RelNode left = correlate.getLeft();  // the scan
+        RelNode right = correlate.getRight(); // Uncollect → Project → Values
+
+        if (!(right instanceof org.apache.calcite.rel.core.Uncollect uncollect)) return null;
+
+        // Get the Uncollect's input to find which array column is being exploded
+        RelNode uncollectInput = uncollect.getInput();
+        if (!(uncollectInput instanceof LogicalProject correlatedProject)) return null;
+
+        java.util.List<RexNode> correlatedExprs = correlatedProject.getProjects();
+        if (correlatedExprs.isEmpty()) return null;
+
+        // Extract the array column name from $cor0.comments
+        RexNode correlatedExpr = correlatedExprs.get(0);
+        String arrayColName = null;
+        int arrayColIndex = -1;
+        if (correlatedExpr instanceof org.apache.calcite.rex.RexFieldAccess fieldAccess) {
+            arrayColName = fieldAccess.getField().getName();
+            arrayColIndex = fieldAccess.getField().getIndex();
+        }
+        if (arrayColName == null) return null;
+
+        LOGGER.info("[NESTED-POC] CorrelateUncollectRewriter PATH A: detected existing Correlate+Uncollect on column '{}' (index={})",
+            arrayColName, arrayColIndex);
+
+        // Get the struct fields from the Uncollect output type
+        RelDataType uncollectOutputType = uncollect.getRowType();
+        java.util.List<String> structFieldNames = uncollectOutputType.getFieldList().stream()
+            .map(RelDataTypeField::getName).collect(java.util.stream.Collectors.toList());
+
+        // Determine the output mapping from the root node
+        // The root could be: Project(Correlate) or Filter(Correlate) or just Correlate
+        int leftFieldCount = left.getRowType().getFieldCount();
+        int[] unnestFieldIndices;
+        int[] scanColIndices;
+
+        if (root instanceof LogicalProject topProject) {
+            int outputCount = topProject.getProjects().size();
+            unnestFieldIndices = new int[outputCount];
+            scanColIndices = new int[outputCount];
+            for (int i = 0; i < outputCount; i++) {
+                unnestFieldIndices[i] = -1;
+                scanColIndices[i] = -1;
+                RexNode expr = topProject.getProjects().get(i);
+                if (expr instanceof RexInputRef ref) {
+                    int idx = ref.getIndex();
+                    if (idx >= leftFieldCount) {
+                        unnestFieldIndices[i] = idx - leftFieldCount;
+                        LOGGER.info("[NESTED-POC] PATH A: output[{}] → unnested field '{}' (struct idx={})",
+                            i, structFieldNames.get(idx - leftFieldCount), idx - leftFieldCount);
+                    } else {
+                        scanColIndices[i] = idx;
+                        LOGGER.info("[NESTED-POC] PATH A: output[{}] → scan column {} ('{}')",
+                            i, idx, left.getRowType().getFieldList().get(idx).getName());
+                    }
+                }
+            }
+        } else {
+            // No project on top — output all columns (left + unnested)
+            int totalCols = leftFieldCount + structFieldNames.size();
+            unnestFieldIndices = new int[totalCols];
+            scanColIndices = new int[totalCols];
+            for (int i = 0; i < totalCols; i++) {
+                if (i < leftFieldCount) {
+                    unnestFieldIndices[i] = -1;
+                    scanColIndices[i] = i;
+                } else {
+                    unnestFieldIndices[i] = i - leftFieldCount;
+                    scanColIndices[i] = -1;
+                }
+            }
+        }
+
+        UNNEST_INFO.set(new UnnestInfo(arrayColName, arrayColIndex, structFieldNames,
+            unnestFieldIndices, scanColIndices));
+
+        LOGGER.info("[NESTED-POC] CorrelateUncollectRewriter PATH A: stripped Correlate+Uncollect. " +
+            "Post-processor will build ExtensionSingleRel('unnest:{}').", arrayColName);
+
+        // Return the left side (the scan) — strip everything above
+        return left;
+    }
+
+    /** Find a Correlate node by walking through Project/Filter wrappers. */
+    private static org.apache.calcite.rel.core.Correlate findCorrelate(RelNode node) {
+        if (node instanceof org.apache.calcite.rel.core.Correlate c) return c;
+        if (node instanceof LogicalProject p) return findCorrelate(p.getInput());
+        if (node instanceof org.apache.calcite.rel.logical.LogicalFilter f) return findCorrelate(f.getInput());
+        if (node instanceof org.apache.calcite.rel.logical.LogicalSort s) return findCorrelate(s.getInput());
+        return null;
     }
 
     /** Extracts a field name from a literal or CAST(literal) expression. */
