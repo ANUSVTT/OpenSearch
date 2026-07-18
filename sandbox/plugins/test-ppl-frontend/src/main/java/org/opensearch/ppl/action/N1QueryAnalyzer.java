@@ -104,8 +104,14 @@ public final class N1QueryAnalyzer {
 
         // Parse aggregate from STATS clause
         N1Aggregate aggregate = null;
-        if (hasNestedInStats && statsClause != null) {
-            aggregate = parseAggregate(statsClause, nestedPath);
+        if (statsClause != null) {
+            if (hasNestedInStats) {
+                aggregate = parseAggregate(statsClause, nestedPath);
+            } else if (hasNestedInWhere && statsClause.trim().matches("(?i)count\\(\\)")) {
+                // C7-3 fix: "where nested.field > X | stats count()" = count of matching parents
+                // The N1 semi-join returns matching parent rows; count() just counts them.
+                aggregate = new N1Aggregate(N1Aggregate.Fn.COUNT, null, "count()");
+            }
         }
 
         // Parse projection from FIELDS clause
@@ -267,16 +273,35 @@ public final class N1QueryAnalyzer {
         return new N1Predicate.Comparison(field, predOp, value);
     }
 
-    /** Parse a STATS clause like "avg(comments.score)" or "count() by comments.author". */
+    /** Parse a STATS clause like "avg(comments.score)" or "count() by comments.author".
+     *  For multiple aggregates like "avg(X), max(X)", finds the FIRST one referencing the nested path.
+     *  For mixed parent+nested like "avg(views), avg(comments.score)", skips the parent aggregate. */
     private static N1Aggregate parseAggregate(String statsClause, String nestedPath) {
-        // Pattern: func(field) [by groupField]
-        Pattern p = Pattern.compile("(avg|sum|min|max|count)\\(([^)]*)\\)(?:\\s+by\\s+(.+))?", Pattern.CASE_INSENSITIVE);
+        // Find all func(field) patterns in the stats clause
+        Pattern p = Pattern.compile("(avg|sum|min|max|count)\\(([^)]*)\\)", Pattern.CASE_INSENSITIVE);
         Matcher m = p.matcher(statsClause.trim());
-        if (!m.matches()) return null;
 
-        String funcName = m.group(1).toLowerCase();
-        String argField = m.group(2).trim();
-        String groupByField = m.group(3) != null ? m.group(3).trim() : null;
+        String funcName = null;
+        String argField = null;
+
+        // Find the first aggregate that references the nested path
+        while (m.find()) {
+            String candidate = m.group(2).trim();
+            if (candidate.startsWith(nestedPath + ".") || candidate.isEmpty()) {
+                funcName = m.group(1).toLowerCase();
+                argField = candidate;
+                break;
+            }
+        }
+        if (funcName == null) return null;
+
+        // Check for "by" clause
+        String groupByField = null;
+        Pattern byPattern = Pattern.compile("\\bby\\s+(\\S+)", Pattern.CASE_INSENSITIVE);
+        Matcher byMatcher = byPattern.matcher(statsClause);
+        if (byMatcher.find()) {
+            groupByField = byMatcher.group(1).trim();
+        }
 
         N1Aggregate.Fn fn = switch (funcName) {
             case "avg" -> N1Aggregate.Fn.AVG;
