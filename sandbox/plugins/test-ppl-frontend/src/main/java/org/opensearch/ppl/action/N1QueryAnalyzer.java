@@ -293,10 +293,13 @@ public final class N1QueryAnalyzer {
         String op = m.group(2);          // ">"
         String valueStr = m.group(3).trim(); // "4"
 
-        // Strip the nested path prefix to get the sub-field name
+        // Strip the nested path prefix to get the LEAF sub-field name
+        // For "posts.replies.upvotes" with nestedPath="posts", get just "upvotes"
         String field;
         if (fullField.startsWith(nestedPath + ".")) {
-            field = fullField.substring(nestedPath.length() + 1); // "score"
+            String stripped = fullField.substring(nestedPath.length() + 1);
+            int lastDot = stripped.lastIndexOf('.');
+            field = (lastDot >= 0) ? stripped.substring(lastDot + 1) : stripped;
         } else {
             // Not a nested field ref in this predicate — could be a parent field filter
             // For now, skip parent-field predicates in the N1 path
