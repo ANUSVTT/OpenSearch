@@ -90,11 +90,15 @@ public final class N1QueryAnalyzer {
         }
 
         // Build N1Descriptor
-        // Determine which nested column is being accessed
-        String nestedPath = findNestedPath(hasNestedInWhere ? whereClause : statsClause, nestedColumns);
+        // Determine which nested column is being accessed and build multi-level unnest path
+        String clause = hasNestedInWhere ? whereClause : statsClause;
+        String nestedPath = findNestedPath(clause, nestedColumns);
         if (nestedPath == null) return null;
 
-        List<String> unnestPath = List.of(nestedPath);
+        // Build unnest path: for "posts.replies.upvotes" where "posts" is nested and
+        // "posts.replies" is a sub-nested field, the path is ["posts", "posts.replies"].
+        // Detect multi-level by checking if the field reference has more dots after the nested prefix.
+        List<String> unnestPath = buildUnnestPath(clause, nestedPath, baseRowType);
 
         // Parse predicate from WHERE clause
         N1Predicate predicate = null;
@@ -181,6 +185,51 @@ public final class N1QueryAnalyzer {
             return m.group(1);
         }
         return null;
+    }
+
+    /** Builds multi-level unnest path. For "posts.replies.upvotes" returns ["posts","posts.replies"]. */
+    private static List<String> buildUnnestPath(String clause, String nestedPath, RelDataType rowType) {
+        List<String> path = new ArrayList<>();
+        path.add(nestedPath);
+
+        // Find the full field reference in the clause that starts with nestedPath
+        Pattern fieldRef = Pattern.compile(Pattern.quote(nestedPath) + "\\.(\\w+(?:\\.\\w+)*)");
+        Matcher m = fieldRef.matcher(clause);
+        if (m.find()) {
+            String afterPrefix = m.group(1); // e.g., "replies.upvotes" or "score"
+            String[] parts = afterPrefix.split("\\.");
+
+            // Check if intermediate parts are also nested (ARRAY<ROW>) by examining the schema
+            // Walk the struct type to find sub-arrays
+            RelDataType currentType = rowType;
+            // Find the top-level array column's element type
+            for (RelDataTypeField field : currentType.getFieldList()) {
+                if (field.getName().equals(nestedPath) && field.getType().getSqlTypeName() == SqlTypeName.ARRAY) {
+                    RelDataType elementType = field.getType().getComponentType();
+                    if (elementType != null && elementType.isStruct()) {
+                        // Check each intermediate part
+                        String pathSoFar = nestedPath;
+                        for (int i = 0; i < parts.length - 1; i++) { // skip last part (it's the leaf field)
+                            String part = parts[i];
+                            // Check if this part is an ARRAY<ROW> sub-field
+                            for (RelDataTypeField subField : elementType.getFieldList()) {
+                                if (subField.getName().equals(part)
+                                    && subField.getType().getSqlTypeName() == SqlTypeName.ARRAY
+                                    && subField.getType().getComponentType() != null
+                                    && subField.getType().getComponentType().isStruct()) {
+                                    pathSoFar = pathSoFar + "." + part;
+                                    path.add(pathSoFar);
+                                    elementType = subField.getType().getComponentType();
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+        return path;
     }
 
     /** Check if a clause text contains a reference to a nested sub-field. */
@@ -313,20 +362,27 @@ public final class N1QueryAnalyzer {
         };
         if (fn == null) return null;
 
-        // Strip nested path prefix from arg field
+        // Strip nested path prefix from arg field — get just the LEAF field name
+        // For "posts.replies.upvotes" with nestedPath="posts", cleanArg should be "upvotes"
+        // (the leaf after all nesting is stripped)
         String cleanArg = null;
         if (!argField.isEmpty()) {
             if (argField.startsWith(nestedPath + ".")) {
-                cleanArg = argField.substring(nestedPath.length() + 1);
+                String stripped = argField.substring(nestedPath.length() + 1);
+                // Get just the last segment (leaf field name)
+                int lastDot = stripped.lastIndexOf('.');
+                cleanArg = (lastDot >= 0) ? stripped.substring(lastDot + 1) : stripped;
             } else {
                 cleanArg = argField;
             }
         }
 
-        // Strip nested path prefix from group-by field
+        // Strip nested path prefix from group-by field — same logic
         String cleanGroupBy = null;
         if (groupByField != null && groupByField.startsWith(nestedPath + ".")) {
-            cleanGroupBy = groupByField.substring(nestedPath.length() + 1);
+            String stripped = groupByField.substring(nestedPath.length() + 1);
+            int lastDot = stripped.lastIndexOf('.');
+            cleanGroupBy = (lastDot >= 0) ? stripped.substring(lastDot + 1) : stripped;
         } else {
             cleanGroupBy = groupByField;
         }
