@@ -125,36 +125,27 @@ public class UnifiedQueryService {
             System.out.println("shreanu Stop 2");
             UnifiedQueryPlanner planner = new UnifiedQueryPlanner(context);
 
-            // [NESTED-POC] Auto-detect nested field references in WHERE/STATS.
-            // If found, bypass the full PPL planner (which would reject ROW type comparisons)
-            // and plan only the base scan. The N1SubstraitBuilder will hand-build the full
-            // Substrait plan including UNNEST + Filter/Aggregate.
+            // [NESTED] Auto-detect nested field references in WHERE/STATS and translate
+            // dotted syntax (comments.score > 4) to expand syntax (expand comments | where score > 4).
+            // The expand command makes nested fields flat columns that the PPL type-checker accepts,
+            // and the OpenSearchNestedFieldRewriter handles the Correlate+Uncollect injection.
+            String effectivePpl = pplText;
             String indexName = N1QueryAnalyzer.extractSourceIndex(pplText);
-            org.opensearch.analytics.N1Descriptor n1Descriptor = null;
             if (indexName != null) {
                 try {
                     RelNode baseScan = planner.plan("source=" + indexName);
-                    n1Descriptor = N1QueryAnalyzer.analyze(pplText, baseScan.getRowType(), indexName);
-                    if (n1Descriptor != null) {
-                        logger.info("[NESTED-POC] N1QueryAnalyzer: auto-detected nested query, built descriptor: " +
-                            "unnestPath={}, predicate={}, aggregate={}, projection={}",
-                            n1Descriptor.unnestPath(), n1Descriptor.predicate(),
-                            n1Descriptor.aggregate(), n1Descriptor.projection());
+                    String translated = N1QueryAnalyzer.translateToExpand(pplText, baseScan.getRowType(), indexName);
+                    if (translated != null) {
+                        logger.info("[NESTED] Translated dotted nested query to expand syntax: {} -> {}",
+                            pplText, translated);
+                        effectivePpl = translated;
                     }
                 } catch (Exception e) {
-                    // Index might not exist or other issue — fall through to normal path
-                    logger.debug("[NESTED-POC] N1QueryAnalyzer: base scan planning failed, using normal path", e);
+                    logger.debug("[NESTED] Translation failed, using original query", e);
                 }
             }
 
-            RelNode logicalPlan;
-            if (n1Descriptor != null) {
-                // Plan only the bare scan — N1SubstraitBuilder handles the rest
-                logicalPlan = planner.plan("source=" + indexName);
-                logger.info("[NESTED-POC] Using N1 bypass path for nested query");
-            } else {
-                logicalPlan = planner.plan(pplText);
-            }
+            RelNode logicalPlan = planner.plan(effectivePpl);
             //  The UnifiedQueryPlanner (built on Apache Calcite) has a PPL grammar that maps each PPL pipe command
             //  to the corresponding Calcite LogicalXxx node. This is hardcoded in the parser:
 
@@ -172,27 +163,16 @@ public class UnifiedQueryService {
             }
             logger.info("[NESTED-POC] ====== END UnifiedQueryPlanner OUTPUT ======");
 
-            // Extract column names from the RelNode's row type (or from N1Descriptor for nested path)
-            List<String> columns;
-            if (n1Descriptor != null) {
-                if (n1Descriptor.aggregate() != null) {
-                    columns = n1Descriptor.aggregate().outputColumns();
-                } else if (n1Descriptor.projection().isEmpty()) {
-                    columns = new ArrayList<>(logicalPlan.getRowType().getFieldNames());
-                } else {
-                    columns = new ArrayList<>(n1Descriptor.projection());
-                }
-            } else {
-                List<RelDataTypeField> fields = logicalPlan.getRowType().getFieldList();
-                columns = new ArrayList<>(fields.size());
-                for (RelDataTypeField field : fields) {
-                    columns.add(field.getName());
-                }
+            // Extract column names from the RelNode's row type
+            List<RelDataTypeField> fields = logicalPlan.getRowType().getFieldList();
+            List<String> columns = new ArrayList<>(fields.size());
+            for (RelDataTypeField field : fields) {
+                columns.add(field.getName());
             }
 
             QueryRequestContext baseCtx = contextProvider.getContext();
             QueryRequestContext queryCtx = new QueryRequestContext(baseCtx.clusterState(), baseCtx.schema(), pplText,
-                null, n1Descriptor);
+                null, null);
 
             if (profile) {
                 PlainActionFuture<ProfiledResult> future = new PlainActionFuture<>();

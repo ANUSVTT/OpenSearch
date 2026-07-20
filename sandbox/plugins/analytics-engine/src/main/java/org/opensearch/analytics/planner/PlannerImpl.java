@@ -140,11 +140,17 @@ public class PlannerImpl {
         modifiedRelNode = decomposeAggregates(modifiedRelNode, listener);
         LOGGER.info("[NESTED-POC] After decomposeAggregates:\n{}", RelOptUtil.toString(modifiedRelNode));
 
-        // POC nested (N1): SKIP the Correlate+Uncollect injection here.
-        // ITEM($0,'author') passes through mark+CBO unchanged (no Exchange inserted).
-        // The CorrelateUncollectRewriter in preprocessForSubstrait detects ITEM on ARRAY
-        // and builds the ExtensionSingleRel directly in the Substrait proto.
-        LOGGER.info("[NESTED-POC] Skipping nested field rewrite (handled in Substrait emission)");
+        // [NESTED] Rewrite ITEM-on-ARRAY(ROW) nested refs into a real Correlate+Uncollect (UNNEST)
+        // subtree BEFORE marking, so the marking rules only ever see plain column refs to the flattened
+        // struct fields (never the unsupported ITEM function). Gated by the generic-rewrite kill-switch
+        // (default ON); when OFF the rewrite is skipped and nested-field queries are unsupported.
+        if (org.opensearch.analytics.NestedRewriteFlag.genericRewriteEnabled()) {
+            RelNode beforeNested = modifiedRelNode;
+            modifiedRelNode = org.opensearch.analytics.planner.rules.OpenSearchNestedFieldRewriter.rewrite(modifiedRelNode);
+            if (modifiedRelNode != beforeNested) {
+                LOGGER.info("[NESTED] After nested UNNEST rewrite:\n{}", RelOptUtil.toString(modifiedRelNode));
+            }
+        }
 
         LOGGER.info("[NESTED-POC] Before mark()");
         LOGGER.info("[NESTED-POC] RelNode entering mark():\n{}", RelOptUtil.toString(modifiedRelNode));

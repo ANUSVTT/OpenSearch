@@ -65,6 +65,7 @@ import io.substrait.expression.FunctionArg;
 import io.substrait.expression.ImmutableAggregateFunctionInvocation;
 import io.substrait.extension.ExtensionCollector;
 import io.substrait.extension.SimpleExtension;
+import io.substrait.relation.ExtensionSingle;
 import io.substrait.isthmus.ConverterProvider;
 import io.substrait.isthmus.SubstraitRelVisitor;
 import io.substrait.isthmus.TypeConverter;
@@ -624,19 +625,15 @@ public class DataFusionFragmentConvertor implements FragmentConvertor {
 
         io.substrait.proto.Plan protoPlan = SubstraitPlanProtoRewriter.rewrite(new PlanProtoConverter().toProto(plan));
 
-        // [NESTED-POC] If the CorrelateUncollectRewriter detected a Correlate+Uncollect pattern,
-        // rebuild the entire plan: ReadRel → ExtensionSingleRel(unnest) → ProjectRel.
-        // We bypass Isthmus' project emission because Isthmus can't serialize ITEM on LIST<STRUCT>.
-        CorrelateUncollectRewriter.UnnestInfo unnestInfo = CorrelateUncollectRewriter.getUnnestInfo();
-        if (unnestInfo != null) {
-            CorrelateUncollectRewriter.clearUnnestInfo();
-            protoPlan = buildUnnestPlan(protoPlan, unnestInfo);
-            LOGGER.info("[NESTED-POC] Built complete unnest plan: ReadRel → ExtensionSingleRel(unnest:{}) → ProjectRel",
-                unnestInfo.arrayColumnName());
+        // [NESTED] Generic path: restore vanilla nested count() = distinct-parent count by
+        // rewriting the proto plan to group-by __row_id__ before the outer count aggregate.
+        // Also handles parent-dedup for docs shape (filter + parent-only projection).
+        if (org.opensearch.analytics.NestedRewriteFlag.genericRewriteEnabled()) {
+            protoPlan = NestedParentDedupRewriter.rewrite(protoPlan);
         }
 
         byte[] bytes = protoPlan.toByteArray();
-        LOGGER.info("[NESTED-POC] Substrait plan ({} bytes) [isthmus path]:\n{}", bytes.length, protoPlan);
+        LOGGER.info("[NESTED] Substrait plan ({} bytes) [isthmus path]:\n{}", bytes.length, protoPlan);
         return bytes;
     }
 
@@ -705,7 +702,7 @@ public class DataFusionFragmentConvertor implements FragmentConvertor {
             //   - original columns before array: [0 .. arrayColIdx - 1] → shifted to same positions? NO!
             //   After double unnest, position layout is:
             //     [struct_field_0, struct_field_1, ..., cols_before_array..., cols_after_array...]
-            //   Wait — per Ansh's empirical finding:
+            //   Empirical finding (verified via probe test):
             //     Base schema: [comments(0), title(1), views(2)]
             //     After unnest: [comments.author(0), comments.score(1), title(2), views(3)]
             //   So struct fields appear IN PLACE at the array's position.
@@ -731,7 +728,7 @@ public class DataFusionFragmentConvertor implements FragmentConvertor {
                     if (scanIdx < arrayColIdx) {
                         // Before array: same position (unchanged by unnest? NO — struct fields expand in place)
                         // Actually per the empirical layout: struct fields take positions [arrayColIdx..],
-                        // and the OTHER columns shift. Let me look at Ansh's comment:
+                        // and the OTHER columns shift. Per the verified layout:
                         //   Base: [comments(0), title(1), views(2)]
                         //   After: [comments.author(0), comments.score(1), title(2), views(3)]
                         // So columns AFTER the array shift by (structFieldCount - 1).
@@ -1080,7 +1077,48 @@ public class DataFusionFragmentConvertor implements FragmentConvertor {
                 Rel rel = super.visit(aggregate);
                 return rel instanceof Aggregate agg ? addNullArgFilters(aggregate, agg) : rel;
             }
+
+            @Override
+            public Rel visit(org.apache.calcite.rel.core.Correlate correlate) {
+                // [NESTED] The generic nested rewrite injects Correlate(left, Uncollect(...)) to mean
+                // UNNEST(left.arrayColumn). isthmus's default would emit this as a JOIN (wrong).
+                // Intercept it: emit an ExtensionSingle carrying "unnest_reshape:<col>" over the
+                // converted LEFT input; the Rust consumer rebuilds LogicalPlan::Unnest reshaped to
+                // this correlate's (Calcite append) row type, so field indices above line up.
+                Rel unnest = tryEmitUnnest(correlate, this);
+                return unnest != null ? unnest : super.visit(correlate);
+            }
         };
+    }
+
+    /**
+     * If {@code correlate} is the Correlate(left, Uncollect(project($cor.arrayCol))) shape the nested
+     * rewrite injects, emit it as an ExtensionSingle(unnest_reshape:arrayColName) over the converted
+     * left input; otherwise return null (a genuine correlated join).
+     */
+    private static Rel tryEmitUnnest(org.apache.calcite.rel.core.Correlate correlate, SubstraitRelVisitor visitor) {
+        RelNode right = stripHep(correlate.getRight());
+        if (!(right instanceof org.apache.calcite.rel.core.Uncollect)) {
+            return null;
+        }
+        RelNode left = correlate.getLeft();
+        org.apache.calcite.util.ImmutableBitSet required = correlate.getRequiredColumns();
+        if (required.cardinality() != 1) {
+            return null;
+        }
+        int arrayColIdx = required.nth(0);
+        String arrayColName = left.getRowType().getFieldList().get(arrayColIdx).getName();
+
+        io.substrait.relation.Rel leftRel = visitor.apply(left);
+        io.substrait.type.Type.Struct recordType = TypeConverter.DEFAULT.toNamedStruct(correlate.getRowType()).struct();
+        int postUnnestWidth = correlate.getRowType().getFieldCount();
+        UnnestExtensionDetail detail = new UnnestExtensionDetail(arrayColName, recordType, postUnnestWidth);
+        LOGGER.info("[NESTED] emitting generic unnest ExtensionSingleRel: unnest_reshape:{}|w={}", arrayColName, postUnnestWidth);
+        return io.substrait.relation.ExtensionSingle.builder().input(leftRel).detail(detail).deriveRecordType(recordType).build();
+    }
+
+    private static RelNode stripHep(RelNode node) {
+        return node instanceof org.apache.calcite.plan.hep.HepRelVertex v ? v.getCurrentRel() : node;
     }
 
     /**

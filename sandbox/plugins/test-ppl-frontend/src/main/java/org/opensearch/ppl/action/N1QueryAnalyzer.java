@@ -187,6 +187,59 @@ public final class N1QueryAnalyzer {
         return null;
     }
 
+    /**
+     * Translates a dotted-nested-syntax PPL query into expand-syntax.
+     * Example: "source=blogs | where comments.score > 4 | fields title"
+     *       -> "source=blogs | expand comments | where score > 4 | fields title"
+     *
+     * Returns null if no translation is needed (no nested refs in WHERE/STATS/FIELDS).
+     */
+    public static String translateToExpand(String pplText, RelDataType baseRowType, String indexName) {
+        Set<String> nestedColumns = new HashSet<>();
+        for (RelDataTypeField field : baseRowType.getFieldList()) {
+            if (field.getType().getSqlTypeName() == SqlTypeName.ARRAY
+                && field.getType().getComponentType() != null
+                && field.getType().getComponentType().isStruct()) {
+                nestedColumns.add(field.getName());
+            }
+        }
+        if (nestedColumns.isEmpty()) {
+            return null;
+        }
+
+        String[] commands = pplText.split("\\|");
+        if (commands.length < 2) return null;
+
+        // Check if any command references a nested column with dot notation
+        String nestedCol = null;
+        for (int i = 1; i < commands.length; i++) {
+            String cmd = commands[i].trim();
+            for (String col : nestedColumns) {
+                if (cmd.contains(col + ".")) {
+                    nestedCol = col;
+                    break;
+                }
+            }
+            if (nestedCol != null) break;
+        }
+        if (nestedCol == null) return null;
+
+        // Build the translated query:
+        // 1. Keep the source command
+        // 2. Insert "expand <nestedCol>" after source
+        // 3. Strip the "<nestedCol>." prefix from all subsequent commands
+        StringBuilder result = new StringBuilder();
+        result.append(commands[0].trim());
+        result.append(" | expand ").append(nestedCol);
+        String dotPrefix = nestedCol + ".";
+        for (int i = 1; i < commands.length; i++) {
+            String cmd = commands[i].trim();
+            cmd = cmd.replace(dotPrefix, "");
+            result.append(" | ").append(cmd);
+        }
+        return result.toString();
+    }
+
     /** Builds multi-level unnest path. For "posts.replies.upvotes" returns ["posts","posts.replies"]. */
     private static List<String> buildUnnestPath(String clause, String nestedPath, RelDataType rowType) {
         List<String> path = new ArrayList<>();
