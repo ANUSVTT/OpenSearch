@@ -46,10 +46,7 @@ import org.opensearch.analytics.planner.rules.OpenSearchFilterRule;
 import org.opensearch.analytics.planner.rules.OpenSearchJoinRule;
 import org.opensearch.analytics.planner.rules.OpenSearchJoinSplitRule;
 import org.opensearch.analytics.planner.rules.OpenSearchLateMaterializationRewriter;
-import org.opensearch.analytics.planner.rules.OpenSearchNestedFieldRewriter;
 import org.opensearch.analytics.planner.rules.OpenSearchProjectRule;
-import org.opensearch.analytics.planner.rules.OpenSearchCorrelateRule;
-import org.opensearch.analytics.planner.rules.OpenSearchUncollectRule;
 import org.opensearch.analytics.planner.rules.OpenSearchSortPushdownRewriter;
 import org.opensearch.analytics.planner.rules.OpenSearchSortRule;
 import org.opensearch.analytics.planner.rules.OpenSearchSortSplitRule;
@@ -113,6 +110,7 @@ public class PlannerImpl {
         ).toRule();
 
     public static RelNode createPlan(RelNode rawRelNode, PlannerContext context) {
+        //step 3
         return runAllOptimizations(rawRelNode, context);
     }
 
@@ -121,25 +119,22 @@ public class PlannerImpl {
      * Package-private so planner rule tests can inspect the marked+optimized tree.
      */
     public static RelNode runAllOptimizations(RelNode rawRelNode, PlannerContext context) {
-        LOGGER.info("[NESTED-POC] ====== PlannerImpl.runAllOptimizations START ======");
-        LOGGER.info("[NESTED-POC] Input RelNode:\n{}", RelOptUtil.toString(rawRelNode));
+        LOGGER.debug("Input RelNode:\n{}", RelOptUtil.toString(rawRelNode));
+        // [NESTED-POC] Stage-by-stage plan dump so the nested/N1 transform is visible end to end.
+        // Grep: NESTED-POC. Mirrors the customer-query -> N1-rewrite pipeline's logging style.
         LOGGER.info("[NESTED-POC] Input RelNode row type: {}", rawRelNode.getRowType());
 
         RuleProfilingListener listener = context.isProfilingEnabled() ? new RuleProfilingListener() : null;
 
-        // NestedDocSupportGap2 : add rule here
         RelNode modifiedRelNode = rawRelNode;
         modifiedRelNode = removeSubQueries(modifiedRelNode, listener);
-        LOGGER.info("[NESTED-POC] After removeSubQueries:\n{}", RelOptUtil.toString(modifiedRelNode));
-
+        logStage("After removeSubQueries", modifiedRelNode);
         modifiedRelNode = extractLiteralAgg(modifiedRelNode, listener);
         modifiedRelNode = reduceExpressions(modifiedRelNode, listener);
         modifiedRelNode = pushdownRules(modifiedRelNode, listener);
-        LOGGER.info("[NESTED-POC] After pushdownRules:\n{}", RelOptUtil.toString(modifiedRelNode));
-
+        logStage("After pushdownRules", modifiedRelNode);
         modifiedRelNode = decomposeAggregates(modifiedRelNode, listener);
-        LOGGER.info("[NESTED-POC] After decomposeAggregates:\n{}", RelOptUtil.toString(modifiedRelNode));
-
+        logStage("After decomposeAggregates", modifiedRelNode);
         // [NESTED] Rewrite ITEM-on-ARRAY(ROW) nested refs into a real Correlate+Uncollect (UNNEST)
         // subtree BEFORE marking, so the marking rules only ever see plain column refs to the flattened
         // struct fields (never the unsupported ITEM function). Gated by the generic-rewrite kill-switch
@@ -148,15 +143,14 @@ public class PlannerImpl {
             RelNode beforeNested = modifiedRelNode;
             modifiedRelNode = org.opensearch.analytics.planner.rules.OpenSearchNestedFieldRewriter.rewrite(modifiedRelNode);
             if (modifiedRelNode != beforeNested) {
-                LOGGER.info("[NESTED] After nested UNNEST rewrite:\n{}", RelOptUtil.toString(modifiedRelNode));
+                logStage("After nested UNNEST rewrite", modifiedRelNode);
             }
         }
-
-        LOGGER.info("[NESTED-POC] Before mark()");
-        LOGGER.info("[NESTED-POC] RelNode entering mark():\n{}", RelOptUtil.toString(modifiedRelNode));
-
+        LOGGER.info("[NESTED-POC] Before mark() — RelNode entering mark():");
+        logStage("RelNode entering mark", modifiedRelNode);
         modifiedRelNode = mark(modifiedRelNode, context, listener);
-        LOGGER.info("[NESTED-POC] After marking:\n{}", RelOptUtil.toString(modifiedRelNode));
+        LOGGER.debug("After marking:\n{}", RelOptUtil.toString(modifiedRelNode));
+        logStage("After marking", modifiedRelNode);
         modifiedRelNode = splitAggLiteralArgProject(modifiedRelNode, listener);
         // TODO(combine-delegated-predicates): a post-marking HEP rule should fuse same-backend
         // AND-sibling AnnotatedPredicates into one combined predicate per group, collapsing N
@@ -168,7 +162,8 @@ public class PlannerImpl {
         // Revisit once those are designed. The rule would also strip performance peers from
         // AnnotatedPredicates under OR/NOT (Lucene call buys nothing in those positions).
         modifiedRelNode = cbo(modifiedRelNode, rawRelNode, context, listener);
-        LOGGER.info("[NESTED-POC] After CBO:\n{}", RelOptUtil.toString(modifiedRelNode));
+        LOGGER.debug("After CBO:\n{}", RelOptUtil.toString(modifiedRelNode));
+        logStage("After CBO", modifiedRelNode);
         LOGGER.info("[NESTED-POC] After CBO row type: {}", modifiedRelNode.getRowType());
         Optional<RelNode> lateMat = OpenSearchLateMaterializationRewriter.rewrite(modifiedRelNode);
         if (lateMat.isPresent()) {
@@ -194,6 +189,11 @@ public class PlannerImpl {
         return modifiedRelNode;
     }
 
+    /** [NESTED-POC] Dump a plan-pipeline stage at INFO (tree form) so the nested transform is traceable. Grep: NESTED-POC. */
+    private static void logStage(String stage, RelNode plan) {
+        LOGGER.info("[NESTED-POC] {}:\n{}", stage, RelOptUtil.toString(plan));
+    }
+
     /**
      * Phase 0: lower {@link org.apache.calcite.rex.RexSubQuery}s (EXISTS / IN / SOME / ANY,
      * including the PPL {@code subsearch} shapes that the frontend lowers to them) into
@@ -206,6 +206,15 @@ public class PlannerImpl {
      * emission. Runs first so every later phase observes a subquery-free tree.
      */
     private static RelNode removeSubQueries(RelNode input, RuleProfilingListener listener) {
+        // [NESTED] This phase exists only to remove RexSubQuery nodes and decorrelate the
+        // LogicalCorrelates that removal introduces. When the tree has NO subquery it is a no-op —
+        // except RelDecorrelator.decorrelateQuery would still rewrite an unrelated structural
+        // Correlate (the one PPL `expand` emits for UNNEST), pushing an outer Filter down into the
+        // Correlate's Uncollect leg. That breaks the unnest emitter (it expects Correlate(left,
+        // Uncollect)). Skip the whole phase when there is no subquery to remove.
+        if (containsSubQuery(input) == false) {
+            return input;
+        }
         // The PPL frontend injects a SUBSEARCH_MAXOUT Sort(fetch=N) at the top of every subsearch.
         // Inside an EXISTS that limit is semantically irrelevant (existence needs only one row), but
         // it becomes a correlated Sort(fetch>1) after FILTER_SUB_QUERY_TO_CORRELATE, which
@@ -233,6 +242,34 @@ public class PlannerImpl {
                 )
             )
             .run(prepared, listener);
+    }
+
+    /**
+     * True if any Filter / Project / Join in the tree carries a {@link RexSubQuery}. Used to skip the
+     * subquery-removal + decorrelation phase entirely for subquery-free queries, so it cannot disturb
+     * an unrelated structural {@code Correlate} (e.g. the one PPL {@code expand} emits for UNNEST).
+     */
+    private static boolean containsSubQuery(RelNode node) {
+        RelNode unwrapped = org.opensearch.analytics.planner.RelNodeUtils.unwrapHep(node);
+        if (unwrapped instanceof org.apache.calcite.rel.core.Filter filter) {
+            if (org.apache.calcite.rex.RexUtil.SubQueryFinder.containsSubQuery(filter)) {
+                return true;
+            }
+        } else if (unwrapped instanceof org.apache.calcite.rel.core.Project project) {
+            if (org.apache.calcite.rex.RexUtil.SubQueryFinder.containsSubQuery(project)) {
+                return true;
+            }
+        } else if (unwrapped instanceof org.apache.calcite.rel.core.Join join) {
+            if (org.apache.calcite.rex.RexUtil.SubQueryFinder.containsSubQuery(join)) {
+                return true;
+            }
+        }
+        for (RelNode child : unwrapped.getInputs()) {
+            if (containsSubQuery(child)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -410,7 +447,6 @@ public class PlannerImpl {
      * optimization.
      */
 
-    // TODOCHECk :
     private static RelNode mark(RelNode input, PlannerContext context, RuleProfilingListener listener) {
         return HepPhase.named("marking")
             .bottomUp()
@@ -424,8 +460,11 @@ public class PlannerImpl {
                     new OpenSearchSortRule(context),
                     new OpenSearchUnionRule(context),
                     new OpenSearchValuesRule(context),
-                    new OpenSearchCorrelateRule(context),
-                    new OpenSearchUncollectRule(context)
+                    // [NESTED] Mark the Correlate+Uncollect (UNNEST) nodes the generic nested rewrite
+                    // injects → forced to the DataFusion backend. Harmless no-ops when the flag is off
+                    // (no such nodes exist in the tree, so the rules never match).
+                    new org.opensearch.analytics.planner.rules.OpenSearchCorrelateRule(context),
+                    new org.opensearch.analytics.planner.rules.OpenSearchUncollectRule(context)
                 )
             )
             .run(input, listener);

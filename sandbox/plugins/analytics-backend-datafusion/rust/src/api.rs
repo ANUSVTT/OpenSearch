@@ -1820,6 +1820,13 @@ fn collect_reads(rel: &substrait::proto::Rel, out: &mut Vec<substrait::proto::Re
                 collect_reads(input, out);
             }
         }
+        // [NESTED] The unnest extension wraps the ReadRel; recurse into it so schema
+        // derivation still finds and registers the underlying NamedTable.
+        Some(RelType::ExtensionSingle(e)) => {
+            if let Some(input) = &e.input {
+                collect_reads(input, out);
+            }
+        }
         _ => {}
     }
 }

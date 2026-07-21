@@ -28,18 +28,18 @@ import org.opensearch.tasks.Task;
  *
  * @opensearch.internal
  */
-public record QueryRequestContext(ClusterState clusterState, SchemaPlus schema, String querySource, Task parentTask,
-                                   N1Descriptor n1Descriptor) {
-
-    public QueryRequestContext(ClusterState clusterState, SchemaPlus schema, String querySource, Task parentTask) {
-        this(clusterState, schema, querySource, parentTask, null);
-    }
+public record QueryRequestContext(
+    ClusterState clusterState,
+    SchemaPlus schema,
+    String querySource,
+    Task parentTask
+) {
 
     public QueryRequestContext(ClusterState clusterState, SchemaPlus schema, String querySource) {
-        this(clusterState, schema, querySource, null, null);
+        this(clusterState, schema, querySource, null);
     }
 
     public QueryRequestContext(ClusterState clusterState, SchemaPlus schema) {
-        this(clusterState, schema, null, null, null);
+        this(clusterState, schema, null, null);
     }
 }

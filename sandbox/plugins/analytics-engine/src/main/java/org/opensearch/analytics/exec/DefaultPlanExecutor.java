@@ -238,13 +238,6 @@ public class DefaultPlanExecutor extends HandledTransportAction<AnalyticsQueryRe
         RelMetadataQueryBase.THREAD_PROVIDERS.set(JaninoRelMetadataProvider.of(logicalFragment.getCluster().getMetadataProvider()));
         logicalFragment.getCluster().invalidateMetadataQuery();
 
-        // [NESTED-POC] Propagate N1Descriptor from QueryRequestContext to this worker thread.
-        // The PPL service sets it on the request thread but convertFragment runs on a search worker.
-        if (queryCtx != null && queryCtx.n1Descriptor() != null) {
-            org.opensearch.analytics.NestedPocOverride.set(queryCtx.n1Descriptor());
-            logger.info("[NESTED-POC] DefaultPlanExecutor: set N1Descriptor on worker thread");
-        }
-
         // Create the slow log wrapper at the start so it observes the full query lifecycle.
         final String querySource = queryCtx != null ? queryCtx.querySource() : null;
         final AnalyticsSearchSlowLog.QuerySlowLogListener queryListener = analyticsSearchSlowLog.createQueryListener(querySource);
@@ -268,37 +261,20 @@ public class DefaultPlanExecutor extends HandledTransportAction<AnalyticsQueryRe
             preferMetadataDriver
         );
         plannerContext.setPlannerSettings(plannerSettings);
-
-        System.out.println("shreanu relnode plan : 1 : logicalFragment : " + logicalFragment + " and planner context: " + plannerContext);
-
         RelNode plan = PlannerImpl.createPlan(logicalFragment, plannerContext);
-
-        System.out.println("shreanu relnode plan : 1 : plan : " + plan);
-        logger.info("[NESTED-POC] ====== DefaultPlanExecutor: After PlannerImpl.createPlan() ======");
+        // [NESTED-POC] Trace the executor's view of the optimized plan + DAG. Grep: NESTED-POC.
+        logger.info("[NESTED-POC] ====== After PlannerImpl.createPlan() ======");
         logger.info("[NESTED-POC] Final optimized plan:\n{}", RelOptUtil.toString(plan));
         logger.info("[NESTED-POC] Final plan row type: {}", plan.getRowType());
-
         final String fullPlan = profile ? RelOptUtil.toString(plan) : null;
         QueryDAG dag = DAGBuilder.build(plan, capabilityRegistry, clusterService, indexNameExpressionResolver);
-
-        System.out.println("shreanu QueryDAG dag : " + dag.toString());
-        logger.info("[NESTED-POC] ====== DefaultPlanExecutor: QueryDAG built ======");
-        logger.info("[NESTED-POC] QueryDAG:\n{}", dag);
-
+        logger.info("[NESTED-POC] ====== QueryDAG built ======\n{}", dag);
         PlanForker.forkAll(dag, capabilityRegistry);
         BackendPlanAdapter.adaptAll(dag, capabilityRegistry);
         // Collapse multi-backend stages to a single chosen alternative before conversion
         // so the convertor runs once per stage and the wire request carries one PlanAlternative.
         PlanAlternativeSelector.selectAll(dag, capabilityRegistry, preferMetadataDriver);
-
-        // [NESTED-POC] Set N1Descriptor on THIS thread right before conversion.
-        // convertFragment runs on this same thread (convertAll is synchronous).
-        if (queryCtx != null && queryCtx.n1Descriptor() != null) {
-            org.opensearch.analytics.NestedPocOverride.set(queryCtx.n1Descriptor());
-        }
-        // SUBSTRAIT CONVERSION (RelNode → Protobuf Bytes)
         FragmentConversionDriver.convertAll(dag, capabilityRegistry);
-        org.opensearch.analytics.NestedPocOverride.clear(); // clean up after conversion
         final long planningTimeNanos = System.nanoTime() - planStartNanos;
         final long planningTimeMs = TimeUnit.NANOSECONDS.toMillis(planningTimeNanos);
         logger.debug("[DefaultPlanExecutor] QueryDAG:\n{}", dag);
@@ -368,21 +344,9 @@ public class DefaultPlanExecutor extends HandledTransportAction<AnalyticsQueryRe
             listener
         );
 
-        // [NESTED-POC] For N1 nested queries, the output columns come from the N1Descriptor
-        // (not from the bare scan's row type). The N1SubstraitBuilder produces a different output schema.
-        final List<String> outputColumnOrder;
-        if (queryCtx != null && queryCtx.n1Descriptor() != null) {
-            org.opensearch.analytics.N1Descriptor n1d = queryCtx.n1Descriptor();
-            if (n1d.aggregate() != null) {
-                outputColumnOrder = n1d.aggregate().outputColumns();
-            } else if (!n1d.projection().isEmpty()) {
-                outputColumnOrder = n1d.projection();
-            } else {
-                outputColumnOrder = logicalFragment.getRowType().getFieldNames();
-            }
-        } else {
-            outputColumnOrder = logicalFragment.getRowType().getFieldNames();
-        }
+        // Result-batch column order = the executed plan's actual output row type. On the generic nested
+        // path the UNNEST/reshape is reflected in the RelNode's row type, so this is authoritative.
+        final List<String> outputColumnOrder = logicalFragment.getRowType().getFieldNames();
         // No taskManager.unregister here: the framework (HandledTransportAction) unregisters the
         // task it created for doExecute once this listener settles. Unregistering it ourselves
         // would double-free a task we no longer own.

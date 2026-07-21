@@ -65,7 +65,6 @@ import io.substrait.expression.FunctionArg;
 import io.substrait.expression.ImmutableAggregateFunctionInvocation;
 import io.substrait.extension.ExtensionCollector;
 import io.substrait.extension.SimpleExtension;
-import io.substrait.relation.ExtensionSingle;
 import io.substrait.isthmus.ConverterProvider;
 import io.substrait.isthmus.SubstraitRelVisitor;
 import io.substrait.isthmus.TypeConverter;
@@ -112,21 +111,6 @@ public class DataFusionFragmentConvertor implements FragmentConvertor {
         SqlFunctionCategory.USER_DEFINED_FUNCTION
     );
 
-    /**
-     * POC nested (N1): Custom operator for accessing a struct field from a LIST&lt;STRUCT&gt; column.
-     * Semantics: unnest_field(array_col, 'field_name') → explodes the array and extracts the named field.
-     * Maps to "unnest_field" Substrait extension function; the Rust side will interpret this as
-     * UNNEST + struct field access.
-     */
-    static final SqlOperator LOCAL_UNNEST_FIELD_OP = new SqlFunction(
-        "unnest_field",
-        SqlKind.OTHER_FUNCTION,
-        ReturnTypes.VARCHAR_FORCE_NULLABLE,
-        null,
-        OperandTypes.ANY_ANY,
-        SqlFunctionCategory.USER_DEFINED_FUNCTION
-    );
-
     private static final List<FunctionMappings.Sig> ADDITIONAL_SCALAR_SIGS = List.of(
         FunctionMappings.s(DelegatedPredicateFunction.FUNCTION, DelegatedPredicateFunction.NAME),
         FunctionMappings.s(AggregateFunction.REDUCE_EVAL_OP, "reduce_eval"),
@@ -146,7 +130,6 @@ public class DataFusionFragmentConvertor implements FragmentConvertor {
         FunctionMappings.s(PatternParserAdapter.LOCAL_PATTERN_PARSER_OP, "pattern_parser"),
         FunctionMappings.s(LOCAL_PATTERN_PARSER_GET_PATTERN_OP, "pattern_parser_get_pattern"),
         FunctionMappings.s(LOCAL_PATTERN_PARSER_GET_TOKENS_OP, "pattern_parser_get_tokens"),
-        FunctionMappings.s(LOCAL_UNNEST_FIELD_OP, "unnest_field"),
         FunctionMappings.s(ConvertTzAdapter.LOCAL_CONVERT_TZ_OP, "convert_tz"),
         FunctionMappings.s(ParseAdapter.LOCAL_PARSE_OP, "parse"),
         FunctionMappings.s(GrokAdapter.LOCAL_GROK_OP, "grok"),
@@ -485,23 +468,12 @@ public class DataFusionFragmentConvertor implements FragmentConvertor {
 
     @Override
     public byte[] convertFragment(RelNode fragment) {
+        // [NESTED] Every fragment — including nested-field queries — flows through the standard isthmus
+        // emission. Nested queries were rewritten to Correlate+Uncollect in the RelNode tree
+        // (OpenSearchNestedFieldRewriter) and the UNNEST is carried as an ExtensionSingleRel by
+        // convertToSubstrait / the visit(Correlate) override. (The legacy hand-built N1SubstraitBuilder
+        // path was removed — the generic path is now the only one.)
         LOGGER.debug("Converting fragment [{}]", fragment.getClass().getSimpleName());
-
-        // [NESTED-POC] If N1 bypass is active, use N1SubstraitBuilder to hand-build
-        // the complete Substrait plan (including UNNEST + Filter/Aggregate + semi-join).
-        org.opensearch.analytics.N1Descriptor n1 = org.opensearch.analytics.NestedPocOverride.get();
-        LOGGER.info("[NESTED-POC] convertFragment: NestedPocOverride.get() = {} (thread={})",
-            n1 != null ? "PRESENT" : "null", Thread.currentThread().getName());
-        if (n1 != null) {
-            byte[] bytes = N1SubstraitBuilder.build(n1, SCHEMA_ONLY_TYPE_PROTO_CONVERTER);
-            LOGGER.info("[NESTED-POC] convertFragment: N1SubstraitBuilder built {} bytes for index [{}], " +
-                "unnestPath={}, predicate={}, projection={}, aggregate={}",
-                bytes.length, n1.indexName(), n1.unnestPath(), n1.predicate(),
-                n1.projection(), n1.aggregate());
-            org.opensearch.analytics.NestedPocOverride.clear(); // consume once
-            return bytes;
-        }
-
         RelNode rewritten = rewriteStageInputScans(fragment);
         return convertToSubstrait(rewritten);
     }
@@ -580,8 +552,7 @@ public class DataFusionFragmentConvertor implements FragmentConvertor {
      * conversion mostly a shape-to-Substrait translation.
      */
     private static RelNode preprocessForSubstrait(RelNode rel) {
-        RelNode preprocessed = CorrelateUncollectRewriter.rewrite(rel);
-        preprocessed = UntypedNullPreprocessor.rewrite(preprocessed);
+        RelNode preprocessed = UntypedNullPreprocessor.rewrite(rel);
         preprocessed = PplAggregateCallRewriter.rewrite(preprocessed);
         preprocessed = PplWindowCallRewriter.rewrite(preprocessed);
         preprocessed = ItemTypeRebuilder.rewrite(preprocessed);
@@ -591,15 +562,7 @@ public class DataFusionFragmentConvertor implements FragmentConvertor {
     }
 
     private byte[] convertToSubstrait(RelNode fragment) {
-        LOGGER.info("[NESTED-POC] convertToSubstrait: INPUT fragment:\n{}",
-            org.apache.calcite.plan.RelOptUtil.toString(fragment));
-        LOGGER.info("[NESTED-POC] convertToSubstrait: INPUT fragment row type: {}", fragment.getRowType());
-
         RelNode preprocessed = preprocessForSubstrait(fragment);
-        LOGGER.info("[NESTED-POC] convertToSubstrait: AFTER preprocessForSubstrait:\n{}",
-            org.apache.calcite.plan.RelOptUtil.toString(preprocessed));
-        LOGGER.info("[NESTED-POC] convertToSubstrait: preprocessed row type: {}", preprocessed.getRowType());
-
         RelRoot root = RelRoot.of(preprocessed, SqlKind.SELECT);
         SubstraitRelVisitor visitor = createVisitor(preprocessed);
         Rel substraitRel;
@@ -613,10 +576,22 @@ public class DataFusionFragmentConvertor implements FragmentConvertor {
 
         // Substrait Root.names is a DEPTH-FIRST FLATTENED name list: DataFusion's consumer
         // (rename_data_type in datafusion-substrait) consumes one name per field INCLUDING
-        // struct children and list-of-struct element fields. For scalar-only outputs this
-        // equals the top-level list; for nested outputs it includes sub-field names.
+        // struct children and list-of-struct element fields. Top-level output names come from
+        // root.fields (preserves projection aliasing); nested struct child names are appended
+        // depth-first from the row type. For scalar-only outputs this equals the top-level list.
         List<String> topLevelNames = root.fields.stream().map(field -> field.getValue()).toList();
         List<String> fieldNames = flattenOutputNames(topLevelNames, root.validatedRowType);
+
+        // [NESTED-POC] When the output has a nested (ARRAY<ROW>) column, the flattened name list is
+        // LONGER than the top-level list (it appends struct child names depth-first). If these two
+        // sizes differ, a nested column is present in this fragment's output. Grep: NESTED-POC.
+        if (fieldNames.size() != topLevelNames.size()) {
+            LOGGER.info(
+                "[NESTED-POC] nested output detected: top-level names {} -> Substrait flattened names {}",
+                topLevelNames,
+                fieldNames
+            );
+        }
 
         Plan.Root substraitRoot = Plan.Root.builder().input(substraitRel).names(fieldNames).build();
         Plan plan = Plan.builder().addRoots(substraitRoot).build();
@@ -624,217 +599,54 @@ public class DataFusionFragmentConvertor implements FragmentConvertor {
         plan = SubstraitPlanPojoRewriter.rewrite(plan);
 
         io.substrait.proto.Plan protoPlan = SubstraitPlanProtoRewriter.rewrite(new PlanProtoConverter().toProto(plan));
-
-        // [NESTED] Generic path: restore vanilla nested count() = distinct-parent count by
-        // rewriting the proto plan to group-by __row_id__ before the outer count aggregate.
-        // Also handles parent-dedup for docs shape (filter + parent-only projection).
+        // [NESTED] Generic path only: restore vanilla nested count() = distinct-parent count by
+        // rewriting count() -> count(DISTINCT __row_id__) for the parent-returning count shape. No-op
+        // for every other shape (and for the flag-OFF hardcoded path, which never reaches here).
         if (org.opensearch.analytics.NestedRewriteFlag.genericRewriteEnabled()) {
             protoPlan = NestedParentDedupRewriter.rewrite(protoPlan);
         }
-
         byte[] bytes = protoPlan.toByteArray();
-        LOGGER.info("[NESTED] Substrait plan ({} bytes) [isthmus path]:\n{}", bytes.length, protoPlan);
+        // [NESTED] Full readable Substrait plan shipped to the data node (isthmus path). The proto
+        // toString shows the Read/Filter/Aggregate/Project/Join rel tree + extensions. Guarded at DEBUG
+        // (and computed only when DEBUG is enabled) so it costs nothing on the default hot path.
+        if (LOGGER.isDebugEnabled()) {
+            LOGGER.debug("[NESTED] Substrait plan ({} bytes) [isthmus path]:\n{}", bytes.length, protoPlan);
+        }
         return bytes;
     }
 
     /**
-     * [NESTED-POC] Builds the complete Substrait plan for an unnest query:
-     * ReadRel → ExtensionSingleRel(unnest:column) → ProjectRel(select post-unnest fields).
+     * Builds the depth-first flattened name list Substrait's {@code Root.names} requires when the
+     * output row type contains struct (ROW) or list-of-struct (ARRAY&lt;ROW&gt;) columns. DataFusion's
+     * consumer walks the schema depth-first and consumes one name per field including nested struct
+     * children (see {@code rename_data_type} in datafusion-substrait): a bare struct consumes a name
+     * for the struct field then recurses into its children; a list recurses into its element WITHOUT
+     * consuming an extra name for the list itself.
      *
-     * After double-unnest on the Rust side, the schema becomes:
-     *   [struct_field_0, struct_field_1, ..., other_scan_cols...]
-     * where the array column is replaced by its struct fields expanded in-place.
-     *
-     * The ProjectRel selects exactly the columns the original query requested.
-     */
-    private static io.substrait.proto.Plan buildUnnestPlan(io.substrait.proto.Plan isthmusPlan,
-                                                            CorrelateUncollectRewriter.UnnestInfo info) {
-        // Isthmus produced a plan with just the ReadRel (bare scan).
-        // We need to: (1) wrap ReadRel with ExtensionSingleRel, (2) add ProjectRel on top.
-
-        io.substrait.proto.Plan.Builder planBuilder = isthmusPlan.toBuilder();
-        for (int i = 0; i < planBuilder.getRelationsCount(); i++) {
-            io.substrait.proto.PlanRel planRel = planBuilder.getRelations(i);
-            if (!planRel.hasRoot()) continue;
-
-            io.substrait.proto.RelRoot root = planRel.getRoot();
-            io.substrait.proto.Rel topRel = root.getInput();
-
-            // Find the ReadRel (may be inside a Project that Isthmus added for column pruning)
-            io.substrait.proto.Rel readRel = findReadRel(topRel);
-            if (readRel == null) readRel = topRel;
-
-            // Step 1: Wrap the ReadRel in ExtensionSingleRel
-            io.substrait.proto.ExtensionSingleRel extensionRel = io.substrait.proto.ExtensionSingleRel.newBuilder()
-                .setCommon(io.substrait.proto.RelCommon.newBuilder()
-                    .setDirect(io.substrait.proto.RelCommon.Direct.getDefaultInstance())
-                    .build())
-                .setInput(readRel)
-                .setDetail(com.google.protobuf.Any.newBuilder()
-                    .setTypeUrl("unnest:" + info.arrayColumnName())
-                    .build())
-                .build();
-            io.substrait.proto.Rel unnestRel = io.substrait.proto.Rel.newBuilder()
-                .setExtensionSingle(extensionRel)
-                .build();
-
-            // Step 2: Build ProjectRel that selects the right post-unnest columns.
-            // After double-unnest of "comments" (LIST<STRUCT<author,score>>), the schema is:
-            //   [comments.author(0), comments.score(1), title(2), views(3)]
-            // The array column at index K is replaced by structFieldCount fields starting at K.
-            // Columns after K shift right by (structFieldCount - 1).
-            int structFieldCount = info.structFieldNames().size();
-            int arrayColIdx = info.arrayColumnIndex();
-
-            io.substrait.proto.ProjectRel.Builder projectBuilder = io.substrait.proto.ProjectRel.newBuilder()
-                .setCommon(io.substrait.proto.RelCommon.newBuilder()
-                    .setDirect(io.substrait.proto.RelCommon.Direct.getDefaultInstance())
-                    .build())
-                .setInput(unnestRel);
-
-            // Build field reference expressions for the output columns
-            List<Integer> emitIndices = new ArrayList<>();
-            int outputIdx = 0;
-            // First, the input columns from unnest pass through (no extra expressions needed for emit-only)
-            // We use emit mapping to select exactly the columns we want.
-            // Post-unnest schema positions:
-            //   - struct fields at positions: [arrayColIdx .. arrayColIdx + structFieldCount - 1]
-            //   - original columns before array: [0 .. arrayColIdx - 1] → shifted to same positions? NO!
-            //   After double unnest, position layout is:
-            //     [struct_field_0, struct_field_1, ..., cols_before_array..., cols_after_array...]
-            //   Empirical finding (verified via probe test):
-            //     Base schema: [comments(0), title(1), views(2)]
-            //     After unnest: [comments.author(0), comments.score(1), title(2), views(3)]
-            //   So struct fields appear IN PLACE at the array's position.
-            //   Columns after the array shift right by (structFieldCount - 1).
-
-            // Build emit-only ProjectRel: just emit the indices we need
-            io.substrait.proto.RelCommon.Builder emitCommon = io.substrait.proto.RelCommon.newBuilder()
-                .setEmit(io.substrait.proto.RelCommon.Emit.newBuilder());
-
-            io.substrait.proto.RelCommon.Emit.Builder emitBuilder =
-                io.substrait.proto.RelCommon.Emit.newBuilder();
-
-            for (int col = 0; col < info.unnestFieldIndices().length; col++) {
-                int unnestFieldIdx = info.unnestFieldIndices()[col];
-                int scanIdx = info.scanColIndices()[col];
-
-                if (unnestFieldIdx >= 0) {
-                    // This output is a struct field from unnest → position = arrayColIdx + unnestFieldIdx
-                    emitBuilder.addOutputMapping(arrayColIdx + unnestFieldIdx);
-                } else if (scanIdx >= 0) {
-                    // This output is a pass-through scan column
-                    int postUnnestPos;
-                    if (scanIdx < arrayColIdx) {
-                        // Before array: same position (unchanged by unnest? NO — struct fields expand in place)
-                        // Actually per the empirical layout: struct fields take positions [arrayColIdx..],
-                        // and the OTHER columns shift. Per the verified layout:
-                        //   Base: [comments(0), title(1), views(2)]
-                        //   After: [comments.author(0), comments.score(1), title(2), views(3)]
-                        // So columns AFTER the array shift by (structFieldCount - 1).
-                        // Columns BEFORE the array... there are none in this example.
-                        // In general: columns at index < arrayColIdx stay at their index? No — the
-                        // struct fields expand AT the array's index, pushing everything after it.
-                        // Actually the layout is simpler: the array col is REPLACED by struct fields.
-                        // So: idx < arrayColIdx → same position (untouched).
-                        postUnnestPos = scanIdx;
-                    } else {
-                        // After (or at) the array: shift right by (structFieldCount - 1)
-                        postUnnestPos = scanIdx + structFieldCount - 1;
-                    }
-                    emitBuilder.addOutputMapping(postUnnestPos);
-                }
-            }
-
-            // No emit/project — let the unnest return all columns.
-            // Root.names describes the full post-unnest output; the Java coordinator
-            // picks the columns it needs by matching against the plan's row type.
-            io.substrait.proto.Rel projectRel = unnestRel;
-
-            // Build output names for the Root — must match the FULL post-unnest schema.
-            // After double-unnest of array column at index K with S struct fields:
-            //   [struct_field_0, struct_field_1, ..., cols_after_array...]
-            // The array column is replaced by its S struct fields in-place.
-            List<String> outputNames = new ArrayList<>();
-            io.substrait.proto.NamedStruct baseSchema = findReadRel(topRel) != null
-                ? findReadRel(topRel).getRead().getBaseSchema() : null;
-            if (baseSchema != null) {
-                // Walk the original schema and expand the array column into struct field names
-                int nameIdx = 0;
-                for (int col2 = 0; col2 < baseSchema.getStruct().getTypesCount(); col2++) {
-                    if (col2 == arrayColIdx) {
-                        // This is the array column — replace with struct field names
-                        for (String sf : info.structFieldNames()) {
-                            outputNames.add(info.arrayColumnName() + "." + sf);
-                        }
-                        // Skip the nested names in the original schema (array + struct fields)
-                        nameIdx++; // skip array name itself
-                        nameIdx += info.structFieldNames().size(); // skip struct field names
-                    } else {
-                        outputNames.add(baseSchema.getNames(nameIdx));
-                        nameIdx++;
-                    }
-                }
-            } else {
-                // Fallback: use original root names
-                outputNames.addAll(root.getNamesList());
-            }
-
-            io.substrait.proto.RelRoot newRoot = io.substrait.proto.RelRoot.newBuilder()
-                .setInput(projectRel)
-                .addAllNames(outputNames)
-                .build();
-            planBuilder.setRelations(i, io.substrait.proto.PlanRel.newBuilder().setRoot(newRoot).build());
-        }
-        return planBuilder.build();
-    }
-
-    /** Finds the ReadRel anywhere in a single-input chain. */
-    private static io.substrait.proto.Rel findReadRel(io.substrait.proto.Rel rel) {
-        if (rel.hasRead()) return rel;
-        if (rel.hasProject()) return findReadRel(rel.getProject().getInput());
-        if (rel.hasFilter()) return findReadRel(rel.getFilter().getInput());
-        if (rel.hasFetch()) return findReadRel(rel.getFetch().getInput());
-        if (rel.hasSort()) return findReadRel(rel.getSort().getInput());
-        return null;
-    }
-
-    /**
-     * Flattens output field names depth-first: for each top-level field, if it's a struct
-     * or ARRAY(struct), appends the struct's child field names recursively. This matches
-     * what DataFusion's Substrait consumer expects in the Root.names list.
-     *
-     * <p>Example: output type (title:VARCHAR, comments:ARRAY(ROW(author:VARCHAR, score:INTEGER)))
-     * → flattened names: ["title", "comments", "author", "score"]
+     * <p>The top-level names use {@code topLevelNames} (which preserves projection aliasing); nested
+     * child names come from the type's declared field names. For a purely scalar row type this returns
+     * exactly {@code topLevelNames}.
      */
     private static List<String> flattenOutputNames(List<String> topLevelNames, RelDataType rowType) {
-        List<String> result = new java.util.ArrayList<>();
         List<RelDataTypeField> fields = rowType.getFieldList();
-        for (int i = 0; i < topLevelNames.size(); i++) {
-            result.add(topLevelNames.get(i));
-            if (i < fields.size()) {
-                RelDataType fieldType = fields.get(i).getType();
-                flattenStructNames(fieldType, result);
-            }
+        java.util.List<String> out = new java.util.ArrayList<>();
+        for (int i = 0; i < fields.size(); i++) {
+            String name = i < topLevelNames.size() ? topLevelNames.get(i) : fields.get(i).getName();
+            out.add(name);
+            appendNestedNames(fields.get(i).getType(), out);
         }
-        return result;
+        return out;
     }
 
-    /** Recursively appends struct child names for nested types. */
-    private static void flattenStructNames(RelDataType type, List<String> out) {
-        // ARRAY(ROW(...)) — descend into the element type
-        if (type.getSqlTypeName() == SqlTypeName.ARRAY) {
-            RelDataType componentType = type.getComponentType();
-            if (componentType != null) {
-                flattenStructNames(componentType, out);
-            }
-            return;
-        }
-        // ROW/STRUCT — append each child name, then recurse into children
-        if (type.getSqlTypeName() == SqlTypeName.ROW) {
+    /** Appends depth-first names for struct children reachable through the given type (through ARRAY/MAP element types). */
+    private static void appendNestedNames(RelDataType type, List<String> out) {
+        if (type.getComponentType() != null) {
+            // ARRAY / MULTISET: recurse into the element type WITHOUT consuming a name for the collection.
+            appendNestedNames(type.getComponentType(), out);
+        } else if (type.isStruct()) {
             for (RelDataTypeField child : type.getFieldList()) {
                 out.add(child.getName());
-                flattenStructNames(child.getType(), out);
+                appendNestedNames(child.getType(), out);
             }
         }
     }
@@ -946,52 +758,7 @@ public class DataFusionFragmentConvertor implements FragmentConvertor {
             ADDITIONAL_SCALAR_SIGS,
             typeFactory,
             typeConverter
-        ) {
-            @Override
-            public Optional<io.substrait.expression.Expression> convert(
-                org.apache.calcite.rex.RexCall call,
-                java.util.function.Function<org.apache.calcite.rex.RexNode, io.substrait.expression.Expression> topLevelConverter
-            ) {
-                // POC nested (N1): handle unnest_field(col_index, field_name) directly
-                // Build a Substrait ScalarFunction without YAML signature lookup
-                if ("unnest_field".equals(call.getOperator().getName())) {
-                    SimpleExtension.ScalarFunctionVariant variant = extensions.scalarFunctions()
-                        .stream()
-                        .filter(f -> "unnest_field".equals(f.name()))
-                        .findFirst()
-                        .orElse(null);
-                    if (variant == null) {
-                        // Function not in YAML — build with any variant we have and use name only
-                        // Emit as generic function with literal args; Rust resolves by name
-                        List<io.substrait.expression.Expression> args = new java.util.ArrayList<>();
-                        for (org.apache.calcite.rex.RexNode operand : call.getOperands()) {
-                            args.add(topLevelConverter.apply(operand));
-                        }
-                        // Use a dummy variant from the first scalar function as template
-                        SimpleExtension.ScalarFunctionVariant dummyVariant = extensions.scalarFunctions().get(0);
-                        return Optional.of(
-                            io.substrait.expression.ImmutableExpression.ScalarFunctionInvocation.builder()
-                                .declaration(dummyVariant)
-                                .addAllArguments(args)
-                                .outputType(io.substrait.type.TypeCreator.NULLABLE.STRING)
-                                .build()
-                        );
-                    }
-                    List<io.substrait.expression.Expression> args = new java.util.ArrayList<>();
-                    for (org.apache.calcite.rex.RexNode operand : call.getOperands()) {
-                        args.add(topLevelConverter.apply(operand));
-                    }
-                    return Optional.of(
-                        io.substrait.expression.ImmutableExpression.ScalarFunctionInvocation.builder()
-                            .declaration(variant)
-                            .addAllArguments(args)
-                            .outputType(io.substrait.type.TypeCreator.NULLABLE.STRING)
-                            .build()
-                    );
-                }
-                return super.convert(call, topLevelConverter);
-            }
-        };
+        );
         // Filter isthmus's default APPROX_COUNT_DISTINCT binding so our `approx_distinct` entry wins.
         // The convert() override inlines literal-Project columns into the AggregateFunctionInvocation
         // as Substrait literals so two-stage UDAFs (e.g. TAKE's N) see the constant on the Final side.
@@ -1081,10 +848,11 @@ public class DataFusionFragmentConvertor implements FragmentConvertor {
             @Override
             public Rel visit(org.apache.calcite.rel.core.Correlate correlate) {
                 // [NESTED] The generic nested rewrite injects Correlate(left, Uncollect(...)) to mean
-                // UNNEST(left.arrayColumn). isthmus's default would emit this as a JOIN (wrong).
-                // Intercept it: emit an ExtensionSingle carrying "unnest_reshape:<col>" over the
-                // converted LEFT input; the Rust consumer rebuilds LogicalPlan::Unnest reshaped to
-                // this correlate's (Calcite append) row type, so field indices above line up.
+                // UNNEST(left.arrayColumn). isthmus's default would emit this as a JOIN (wrong — a join
+                // is not an unnest). Intercept it: emit an ExtensionSingle carrying "unnest_reshape:<col>"
+                // over the converted LEFT input; the Rust consumer rebuilds LogicalPlan::Unnest reshaped
+                // to this correlate's (Calcite append) row type, so field indices above line up. Every
+                // other rel (Filter/Aggregate/GroupBy/Having/Sort/Project) flows through isthmus as usual.
                 Rel unnest = tryEmitUnnest(correlate, this);
                 return unnest != null ? unnest : super.visit(correlate);
             }
@@ -1092,14 +860,17 @@ public class DataFusionFragmentConvertor implements FragmentConvertor {
     }
 
     /**
-     * If {@code correlate} is the Correlate(left, Uncollect(project($cor.arrayCol))) shape the nested
-     * rewrite injects, emit it as an ExtensionSingle(unnest_reshape:arrayColName) over the converted
-     * left input; otherwise return null (a genuine correlated join).
+     * If {@code correlate} is the {@code Correlate(left, Uncollect(project($cor.arrayCol)))} shape the
+     * nested rewrite injects, emit it as an {@code ExtensionSingle(unnest_reshape:&lt;arrayColName&gt;)} over
+     * the converted left input; otherwise return {@code null} (a genuine correlated join). The unnest
+     * path is the dotted name of the left column named by {@code requiredColumns}; the extension rel's
+     * record type is this correlate's Calcite row type (originals + appended struct fields), which the
+     * Rust reshape reproduces.
      */
     private static Rel tryEmitUnnest(org.apache.calcite.rel.core.Correlate correlate, SubstraitRelVisitor visitor) {
         RelNode right = stripHep(correlate.getRight());
         if (!(right instanceof org.apache.calcite.rel.core.Uncollect)) {
-            return null;
+            return null; // not our injected unnest — a real correlated join
         }
         RelNode left = correlate.getLeft();
         org.apache.calcite.util.ImmutableBitSet required = correlate.getRequiredColumns();
@@ -1110,13 +881,25 @@ public class DataFusionFragmentConvertor implements FragmentConvertor {
         String arrayColName = left.getRowType().getFieldList().get(arrayColIdx).getName();
 
         io.substrait.relation.Rel leftRel = visitor.apply(left);
-        io.substrait.type.Type.Struct recordType = TypeConverter.DEFAULT.toNamedStruct(correlate.getRowType()).struct();
+        Type.Struct recordType = TypeConverter.DEFAULT.toNamedStruct(correlate.getRowType()).struct();
+        // [NESTED] The Calcite post-unnest width (Correlate row-type field count) is the single source of
+        // truth for where a physical __row_id__ lands after the reshape reorders it to the tail. Stamp it
+        // into the detail so the parent-dedup post-pass can reference __row_id__ at a known index without
+        // re-deriving the reshape's in-place-array-keeping layout from the proto (error-prone at depth).
         int postUnnestWidth = correlate.getRowType().getFieldCount();
         UnnestExtensionDetail detail = new UnnestExtensionDetail(arrayColName, recordType, postUnnestWidth);
+        // [NESTED] Intentional one-line INFO breadcrumb marking the GENERIC UNNEST emission (isthmus
+        // path). Cheap (no full-plan toString) and stable — it is the signal the differential harness
+        // greps to verify every nested query took the generic ExtensionSingleRel path, not the legacy
+        // hand-built one. Grep: unnest_reshape.
         LOGGER.info("[NESTED] emitting generic unnest ExtensionSingleRel: unnest_reshape:{}|w={}", arrayColName, postUnnestWidth);
+        // isthmus's ExtensionSingle immutable has a MANDATORY builder attribute deriveRecordType
+        // (the post-unnest output row type) — separate from the detail's own deriveRecordType(Rel).
+        // Both carry the Calcite Correlate row type (originals + appended exploded struct fields).
         return io.substrait.relation.ExtensionSingle.builder().input(leftRel).detail(detail).deriveRecordType(recordType).build();
     }
 
+    /** Unwrap a Calcite HepRelVertex so instanceof checks see the real rel. */
     private static RelNode stripHep(RelNode node) {
         return node instanceof org.apache.calcite.plan.hep.HepRelVertex v ? v.getCurrentRel() : node;
     }

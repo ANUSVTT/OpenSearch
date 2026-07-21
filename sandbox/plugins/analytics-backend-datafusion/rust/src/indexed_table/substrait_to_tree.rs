@@ -98,14 +98,11 @@ pub struct ExtractionResult {
 /// base parquet schema).
 pub fn extract_filter_expr(plan: &LogicalPlan) -> Option<Expr> {
     match plan {
-        // Don't descend into Unnest — filters below reference post-unnest columns
-        LogicalPlan::Unnest(_) => None,
         LogicalPlan::Filter(filter) => {
-            if has_aggregate_or_window_below(&filter.input) {
+            if has_aggregate_or_window_below(&filter.input) || has_unnest_below(&filter.input) {
+                // Skip this filter (references post-agg/post-unnest columns that don't exist
+                // in the base scan schema) but keep searching deeper for a pushable parent filter.
                 extract_filter_expr(&filter.input)
-            } else if has_unnest_below(&filter.input) {
-                // Filter above unnest references post-unnest columns; skip it
-                None
             } else {
                 Some(filter.predicate.clone())
             }

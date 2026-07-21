@@ -266,7 +266,15 @@ public final class OpenSearchNestedFieldRewriter {
             this.correlateRowType = correlateRowType;
             this.fieldToIndex = new LinkedHashMap<>();
             for (int i = unnestedStartIdx; i < correlateRowType.getFieldCount(); i++) {
-                fieldToIndex.put(correlateRowType.getFieldList().get(i).getName(), i);
+                String colName = correlateRowType.getFieldList().get(i).getName();
+                fieldToIndex.put(colName, i);
+                // Calcite deduplicates field names by appending a numeric suffix (e.g. "name" → "name0")
+                // when the parent already has a field with the same name. Map the original (unsuffixed)
+                // name too so ITEM($arrayCol, 'name') resolves to the correct unnested column.
+                String stripped = colName.replaceAll("\\d+$", "");
+                if (!stripped.equals(colName) && !fieldToIndex.containsKey(stripped)) {
+                    fieldToIndex.put(stripped, i);
+                }
             }
         }
 

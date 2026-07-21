@@ -125,17 +125,22 @@ public class FragmentConversionDriver {
             IntraOperatorDelegationBytes delegationBytes = new IntraOperatorDelegationBytes(registry);
             byte[] bytes = convert(plan.resolvedFragment(), convertor, delegationBytes);
 
+            // [NESTED-POC] The readable Substrait plan is logged in DataFusionFragmentConvertor
+            // (which owns the io.substrait proto classes; analytics-engine has no substrait dep).
+            // Here we log the shipped byte size + the DAG-level stage info below. Grep: NESTED-POC.
+
             // Assemble instruction list
             List<DelegatedExpression> delegated = delegationBytes.getResult();
             List<InstructionNode> instructions = assembleInstructions(backend, plan, treeShape, delegationBytes);
 
             converted.add(plan.withConvertedBytes(bytes, delegated).withInstructions(instructions));
             LOGGER.info(
-                "[NESTED-POC] Stage [{}] converted: substraitBytes={}, treeShape={}, delegatedExpressions={}, instructions={}",
+                "[NESTED-POC] Stage [{}] converted: substraitBytes={}, treeShape={}, delegatedExpressions={}{}, instructions={}",
                 plan.backendId(),
-                bytes.length,
+                bytes == null ? 0 : bytes.length,
                 treeShape,
                 delegated.size(),
+                delegated.isEmpty() ? "" : " [ids=" + delegated.stream().map(d -> String.valueOf(d.getAnnotationId())).toList() + "]",
                 instructions
             );
         }
@@ -236,7 +241,15 @@ public class FragmentConversionDriver {
         if (leaf instanceof OpenSearchTableScan tableScan) {
             // QTF narrows the Scan to [belowAnchorPhysicalFields..., __row_id__]; signal that to the
             // backend so it picks the row-id-aware table provider regardless of delegation.
-            boolean requestsRowIds = tableScan.getRowType().getFieldNames().contains(OpenSearchLateMaterialization.ROW_ID_FIELD);
+            //
+            // [NESTED] N1 nested plans also need this: they semi-join/group on __row_id__ inside the
+            // hand-built Substrait (not visible in the RelNode row type). The PHYSICAL parquet
+            // __row_id__ column restarts at 0 per writer generation, so with >1 generation the join
+            // would collide ids across generations (e.g. parent 0 of gen1 == parent 0 of gen2).
+            // requestsRowIds=true selects the indexed session context whose table provider COMPUTES
+            // shard-global ids (global_base + rg.first_row + position) — same mechanism QTF uses.
+            boolean requestsRowIds = tableScan.getRowType().getFieldNames().contains(OpenSearchLateMaterialization.ROW_ID_FIELD)
+                || containsUnnest(resolvedFragment);
             List<DelegatedExpression> delegated = delegationBytes.getResult();
             if (!delegated.isEmpty()) {
                 factory.createShardScanWithDelegationNode(treeShape, delegated.size(), requestsRowIds).ifPresent(instructions::add);
@@ -257,6 +270,21 @@ public class FragmentConversionDriver {
         if (root instanceof OpenSearchAggregate agg && agg.getMode() == AggregateMode.PARTIAL) return true;
         for (RelNode child : root.getInputs()) {
             if (containsPartialAggregate(child)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * [NESTED] True if the fragment contains an UNNEST ({@link org.apache.calcite.rel.core.Uncollect},
+     * possibly the marked {@code OpenSearchUncollect}) — i.e. the generic nested-field rewrite injected
+     * a {@code Correlate + Uncollect}. Such plans reference the physical {@code __row_id__} for
+     * parent de-duplication/grouping, which is computed shard-globally only by the indexed executor;
+     * so we request row ids to select it (same reason as QTF, generalised to the generic nested path).
+     */
+    private static boolean containsUnnest(RelNode root) {
+        if (root instanceof org.apache.calcite.rel.core.Uncollect) return true;
+        for (RelNode child : root.getInputs()) {
+            if (containsUnnest(child)) return true;
         }
         return false;
     }
