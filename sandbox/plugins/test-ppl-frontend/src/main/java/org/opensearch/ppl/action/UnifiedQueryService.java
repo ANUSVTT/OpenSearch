@@ -26,8 +26,12 @@ import org.opensearch.sql.executor.QueryType;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Core orchestrator: PPL text → RelNode → QueryPlanExecutor → PPLResponse.
@@ -117,13 +121,31 @@ public class UnifiedQueryService {
             logger.info("[UnifiedQueryService] Context built, planning PPL: {}", pplText);
             UnifiedQueryPlanner planner = new UnifiedQueryPlanner(context);
 
-            // [NESTED] Nested-field queries are planned normally: PPL `expand <array>` lowers to a
-            // Calcite Correlate+Uncollect that OpenSearchNestedFieldRewriter marks and isthmus emits as
-            // an ExtensionSingleRel (see DataFusionFragmentConvertor). No special-casing here — the
-            // generic path handles filter/aggregate/group/sort/projection uniformly.
-            //step 1
-            RelNode logicalPlan = planner.plan(pplText);
-            //step 2 : we have got the relnode tree
+            // [NESTED] Plan the query. If the upstream PPL validator rejects a dotted nested
+            // predicate (e.g. `where comments.score > 4`) with "Unsupported conversion for
+            // Relational Data type: ROW", auto-translate to expand form and retry. This bridges
+            // the gap until the upstream validator is relaxed to emit ITEM() for predicates the
+            // same way it already does for projections.
+            RelNode logicalPlan;
+            try {
+                logicalPlan = planner.plan(pplText);
+            } catch (Exception e) {
+                String msg = e.getMessage() != null ? e.getMessage() : "";
+                Throwable cause = e.getCause();
+                String causeMsg = cause != null && cause.getMessage() != null ? cause.getMessage() : "";
+                if (msg.contains("Unsupported conversion for Relational Data type")
+                    || causeMsg.contains("Unsupported conversion for Relational Data type")) {
+                    String expanded = tryInjectExpand(pplText, schemaPlus);
+                    if (expanded != null) {
+                        logger.info("[NESTED] dotted predicate rejected; retrying with expand: {}", expanded);
+                        logicalPlan = planner.plan(expanded);
+                    } else {
+                        throw e;
+                    }
+                } else {
+                    throw e;
+                }
+            }
 
             if (logger.isDebugEnabled()) {
                 logger.debug("[NESTED] logical plan for PPL [{}]:\n{}", pplText, org.apache.calcite.plan.RelOptUtil.toString(logicalPlan));
@@ -180,5 +202,63 @@ public class UnifiedQueryService {
             }
             throw new RuntimeException("Failed to execute PPL query: " + e.getMessage(), e);
         }
+    }
+
+    // ── [NESTED] Dotted-to-expand auto-translation (bridges upstream validator gap) ──
+
+    /**
+     * Given PPL text containing dotted nested refs (e.g. {@code where comments.score > 4}), detect
+     * which top-level fields are ARRAY-typed (i.e. nested) in the schema, and rewrite:
+     * <pre>
+     *   source=blogs | where comments.score > 4 | fields title
+     *     ->  source=blogs | expand comments | where score > 4 | fields title
+     * </pre>
+     * Returns {@code null} if no nested field is detected (caller should rethrow the original error).
+     */
+    private static String tryInjectExpand(String pplText, SchemaPlus schemaPlus) {
+        // 1. Extract the index name from "source=<index>"
+        Matcher sourceMatcher = Pattern.compile("source\\s*=\\s*(\\S+)").matcher(pplText);
+        if (sourceMatcher.find() == false) return null;
+        String indexName = sourceMatcher.group(1);
+
+        // 2. Resolve the table's fields and find which are ARRAY-typed (nested)
+        Table table = schemaPlus.getTable(indexName);
+        if (table == null) return null;
+        org.apache.calcite.rel.type.RelDataType rowType = table.getRowType(
+            new org.apache.calcite.jdbc.JavaTypeFactoryImpl());
+        Set<String> nestedFields = new HashSet<>();
+        for (org.apache.calcite.rel.type.RelDataTypeField f : rowType.getFieldList()) {
+            if (f.getType().getSqlTypeName() == org.apache.calcite.sql.type.SqlTypeName.ARRAY) {
+                nestedFields.add(f.getName());
+            }
+        }
+        if (nestedFields.isEmpty()) return null;
+
+        // 3. Split the PPL on "|" and scan for dotted refs matching nested fields
+        String[] segments = pplText.split("\\|");
+        String nestedFieldUsed = null;
+        for (int i = 1; i < segments.length; i++) {
+            String seg = segments[i].trim();
+            for (String nf : nestedFields) {
+                if (seg.contains(nf + ".")) {
+                    nestedFieldUsed = nf;
+                    break;
+                }
+            }
+            if (nestedFieldUsed != null) break;
+        }
+        if (nestedFieldUsed == null) return null;
+
+        // 4. Insert "| expand <nestedField>" after source, and strip the prefix from dotted refs
+        StringBuilder result = new StringBuilder();
+        result.append(segments[0].trim());
+        result.append(" | expand ").append(nestedFieldUsed);
+        String prefix = nestedFieldUsed + ".";
+        for (int i = 1; i < segments.length; i++) {
+            String seg = segments[i].trim();
+            seg = seg.replace(prefix, "");
+            result.append(" | ").append(seg);
+        }
+        return result.toString();
     }
 }
