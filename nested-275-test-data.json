@@ -1,0 +1,485 @@
+{
+ "blogs": [
+  {
+   "title": "First post",
+   "views": 100,
+   "rating": 4.5,
+   "comments": [
+    {
+     "author": "alice",
+     "score": 5,
+     "text": "great article"
+    },
+    {
+     "author": "bob",
+     "score": 3,
+     "text": "could be better"
+    }
+   ]
+  },
+  {
+   "title": "Second post",
+   "views": 50,
+   "rating": 3.8,
+   "comments": [
+    {
+     "author": "carol",
+     "score": 4,
+     "text": "very helpful thanks"
+    }
+   ]
+  },
+  {
+   "title": "Third post",
+   "views": 200,
+   "rating": 4.9,
+   "comments": [
+    {
+     "author": "dave",
+     "score": 9,
+     "text": "mind blowing content"
+    },
+    {
+     "author": "eve",
+     "score": 7,
+     "text": "solid explanation"
+    }
+   ]
+  },
+  {
+   "title": "Fourth post",
+   "views": 300,
+   "rating": 4.2,
+   "comments": [
+    {
+     "author": "frank",
+     "score": 8,
+     "text": "excellent tutorial"
+    },
+    {
+     "author": "grace",
+     "score": 6,
+     "text": "needs more examples"
+    },
+    {
+     "author": "helen",
+     "score": 4,
+     "text": "too basic for me"
+    }
+   ]
+  },
+  {
+   "title": "Fifth post",
+   "views": 150,
+   "rating": 4.7,
+   "comments": [
+    {
+     "author": "ivan",
+     "score": 9,
+     "text": "saved my day"
+    }
+   ]
+  }
+ ],
+ "ecommerce": [
+  {
+   "product_name": "Laptop Pro",
+   "price": 1299.99,
+   "category": "electronics",
+   "in_stock": 15,
+   "reviews": [
+    {
+     "comment": "best laptop ever",
+     "helpful_votes": 42,
+     "rating": 5,
+     "reviewer": "john"
+    },
+    {
+     "comment": "good but expensive",
+     "helpful_votes": 18,
+     "rating": 4,
+     "reviewer": "jane"
+    },
+    {
+     "comment": "average performance",
+     "helpful_votes": 5,
+     "rating": 3,
+     "reviewer": "bob"
+    }
+   ]
+  },
+  {
+   "product_name": "Wireless Mouse",
+   "price": 29.99,
+   "category": "electronics",
+   "in_stock": 200,
+   "reviews": [
+    {
+     "comment": "perfect for work",
+     "helpful_votes": 30,
+     "rating": 5,
+     "reviewer": "alice"
+    }
+   ]
+  },
+  {
+   "product_name": "Coffee Maker",
+   "price": 89.99,
+   "category": "kitchen",
+   "in_stock": 50,
+   "reviews": [
+    {
+     "comment": "makes great coffee",
+     "helpful_votes": 15,
+     "rating": 4,
+     "reviewer": "carol"
+    },
+    {
+     "comment": "love the timer feature",
+     "helpful_votes": 22,
+     "rating": 5,
+     "reviewer": "dave"
+    }
+   ]
+  },
+  {
+   "product_name": "Running Shoes",
+   "price": 149.99,
+   "category": "sports",
+   "in_stock": 30,
+   "reviews": [
+    {
+     "comment": "too narrow for wide feet",
+     "helpful_votes": 8,
+     "rating": 2,
+     "reviewer": "eve"
+    },
+    {
+     "comment": "comfortable after break in",
+     "helpful_votes": 12,
+     "rating": 4,
+     "reviewer": "frank"
+    },
+    {
+     "comment": "perfect for long runs",
+     "helpful_votes": 35,
+     "rating": 5,
+     "reviewer": "grace"
+    }
+   ]
+  },
+  {
+   "product_name": "Yoga Mat",
+   "price": 35.0,
+   "category": "sports",
+   "in_stock": 100,
+   "reviews": [
+    {
+     "comment": "good thickness",
+     "helpful_votes": 10,
+     "rating": 4,
+     "reviewer": "helen"
+    },
+    {
+     "comment": "slippery when wet",
+     "helpful_votes": 7,
+     "rating": 3,
+     "reviewer": "ivan"
+    }
+   ]
+  },
+  {
+   "product_name": "Headphones",
+   "price": 249.99,
+   "category": "electronics",
+   "in_stock": 45,
+   "reviews": [
+    {
+     "comment": "incredible sound quality",
+     "helpful_votes": 50,
+     "rating": 5,
+     "reviewer": "jack"
+    },
+    {
+     "comment": "comfortable for flights",
+     "helpful_votes": 28,
+     "rating": 4,
+     "reviewer": "kate"
+    },
+    {
+     "comment": "best noise cancelling",
+     "helpful_votes": 44,
+     "rating": 5,
+     "reviewer": "leo"
+    },
+    {
+     "comment": "bass could be stronger",
+     "helpful_votes": 9,
+     "rating": 3,
+     "reviewer": "mia"
+    }
+   ]
+  }
+ ],
+ "logs": [
+  {
+   "service": "api-gateway",
+   "level": "ERROR",
+   "http_status": 504,
+   "response_time": 5100,
+   "spans": [
+    {
+     "bytes_transferred": 1024,
+     "duration_ms": 50,
+     "operation": "auth",
+     "status": "ok"
+    },
+    {
+     "bytes_transferred": 0,
+     "duration_ms": 5000,
+     "operation": "db-query",
+     "status": "timeout"
+    },
+    {
+     "bytes_transferred": 512,
+     "duration_ms": 2,
+     "operation": "cache",
+     "status": "ok"
+    }
+   ]
+  },
+  {
+   "service": "user-service",
+   "level": "INFO",
+   "http_status": 200,
+   "response_time": 45,
+   "spans": [
+    {
+     "bytes_transferred": 256,
+     "duration_ms": 10,
+     "operation": "validate",
+     "status": "ok"
+    },
+    {
+     "bytes_transferred": 4096,
+     "duration_ms": 30,
+     "operation": "db-read",
+     "status": "ok"
+    }
+   ]
+  },
+  {
+   "service": "payment",
+   "level": "ERROR",
+   "http_status": 500,
+   "response_time": 2100,
+   "spans": [
+    {
+     "bytes_transferred": 0,
+     "duration_ms": 2000,
+     "operation": "charge",
+     "status": "error"
+    },
+    {
+     "bytes_transferred": 128,
+     "duration_ms": 50,
+     "operation": "rollback",
+     "status": "ok"
+    }
+   ]
+  },
+  {
+   "service": "api-gateway",
+   "level": "WARN",
+   "http_status": 200,
+   "response_time": 3300,
+   "spans": [
+    {
+     "bytes_transferred": 1024,
+     "duration_ms": 200,
+     "operation": "auth",
+     "status": "ok"
+    },
+    {
+     "bytes_transferred": 65536,
+     "duration_ms": 3000,
+     "operation": "external-api",
+     "status": "slow"
+    }
+   ]
+  },
+  {
+   "service": "search",
+   "level": "INFO",
+   "http_status": 200,
+   "response_time": 120,
+   "spans": [
+    {
+     "bytes_transferred": 128,
+     "duration_ms": 5,
+     "operation": "parse",
+     "status": "ok"
+    },
+    {
+     "bytes_transferred": 32768,
+     "duration_ms": 100,
+     "operation": "index-scan",
+     "status": "ok"
+    },
+    {
+     "bytes_transferred": 8192,
+     "duration_ms": 15,
+     "operation": "rank",
+     "status": "ok"
+    }
+   ]
+  },
+  {
+   "service": "notification",
+   "level": "INFO",
+   "http_status": 200,
+   "response_time": 800,
+   "spans": [
+    {
+     "bytes_transferred": 2048,
+     "duration_ms": 20,
+     "operation": "template",
+     "status": "ok"
+    },
+    {
+     "bytes_transferred": 4096,
+     "duration_ms": 750,
+     "operation": "smtp-send",
+     "status": "ok"
+    }
+   ]
+  }
+ ],
+ "employees": [
+  {
+   "name": "Alice",
+   "department": "engineering",
+   "salary": 150000,
+   "years_exp": 8,
+   "skills": [
+    {
+     "certified": "yes",
+     "level": 9,
+     "name": "java",
+     "years_used": 8
+    },
+    {
+     "certified": "no",
+     "level": 7,
+     "name": "rust",
+     "years_used": 2
+    }
+   ]
+  },
+  {
+   "name": "Bob",
+   "department": "engineering",
+   "salary": 130000,
+   "years_exp": 5,
+   "skills": [
+    {
+     "certified": "yes",
+     "level": 8,
+     "name": "python",
+     "years_used": 5
+    },
+    {
+     "certified": "yes",
+     "level": 6,
+     "name": "java",
+     "years_used": 3
+    },
+    {
+     "certified": "no",
+     "level": 5,
+     "name": "sql",
+     "years_used": 4
+    }
+   ]
+  },
+  {
+   "name": "Carol",
+   "department": "marketing",
+   "salary": 110000,
+   "years_exp": 6,
+   "skills": [
+    {
+     "certified": "yes",
+     "level": 8,
+     "name": "analytics",
+     "years_used": 6
+    }
+   ]
+  },
+  {
+   "name": "Dave",
+   "department": "engineering",
+   "salary": 160000,
+   "years_exp": 12,
+   "skills": null
+  },
+  {
+   "name": "Eve",
+   "department": "data",
+   "salary": 145000,
+   "years_exp": 7,
+   "skills": [
+    {
+     "certified": "yes",
+     "level": 9,
+     "name": "python",
+     "years_used": 7
+    },
+    {
+     "certified": "yes",
+     "level": 8,
+     "name": "ml",
+     "years_used": 5
+    },
+    {
+     "certified": "no",
+     "level": 7,
+     "name": "sql",
+     "years_used": 6
+    },
+    {
+     "certified": "no",
+     "level": 6,
+     "name": "spark",
+     "years_used": 3
+    }
+   ]
+  },
+  {
+   "name": "Frank",
+   "department": "engineering",
+   "salary": 140000,
+   "years_exp": 6,
+   "skills": [
+    {
+     "certified": "yes",
+     "level": 8,
+     "name": "kubernetes",
+     "years_used": 4
+    },
+    {
+     "certified": "yes",
+     "level": 9,
+     "name": "docker",
+     "years_used": 5
+    },
+    {
+     "certified": "no",
+     "level": 6,
+     "name": "python",
+     "years_used": 3
+    }
+   ]
+  }
+ ]
+}
