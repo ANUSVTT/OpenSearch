@@ -223,79 +223,162 @@ every other query. Nested support is implemented as:
 Nothing downstream of the consumer knows nested documents exist -- DataFusion's
 native `Unnest` operator, filter, aggregate, and projection do all the work.
 
-### 4.2 Pipeline diagram (overview)
+### 4.2 Pipeline diagram (overview with call chain)
 
 ```
-  PPL / SQL query text
+  User PPL query: "source=blogs | where comments.score > 4 | fields title"
+        |
+        | UnifiedQueryService.execute(pplText)
+        v
++---------------------------+
+| STEP 1:                    |  UnifiedQueryService.execute()
+| Translation Layer          |    -> planner.plan(pplText) throws "ROW type" error
+|                            |    -> tryInjectExpand(pplText, schema)
+| UnifiedQueryService.java   |    -> planner.plan(expandedQuery) succeeds
+|                            |
+|                            |  NOTE: only fires when PPL type-checker rejects.
+|                            |  For projection-only queries (fields comments.author),
+|                            |  planner.plan() succeeds on first try -- no expand injected.
++---------------------------+
+        |
+        | planner.plan() returns the logical RelNode tree
+        v
++---------------------------+
+| STEP 2:                    |  UnifiedQueryPlanner.plan(expandedPPL)
+| PPL Frontend               |    -> parses "expand comments" -> Correlate+Uncollect
+|                            |    -> parses "where score > 4" -> Filter
+| UnifiedQueryPlanner        |    -> parses "fields title" -> Project
+| (sql-plugin jar)           |
+|                            |  OUTPUT (logical RelNode):
+|                            |    LogicalProject(title=$1)
+|                            |      LogicalFilter($4 > 4)
+|                            |        LogicalProject(rating=$1,title=$2,...,score=$5)
+|                            |          LogicalCorrelate(INNER, $cor0, req={0})
+|                            |            LogicalTableScan(blogs)
+|                            |            Uncollect(Project($cor0.comments))
++---------------------------+
+        |
+        | DefaultPlanExecutor.executeInternal(logicalPlan)
+        |   -> PlannerImpl.createPlan(logicalPlan, plannerContext)
+        |     -> runAllOptimizations(logicalPlan)
+        v
++---------------------------+
+| STEP 3:                    |  PlannerImpl.runAllOptimizations():
+| PlannerImpl                |    3a. removeSubQueries()    -- skipped (no subquery)
+|                            |    3b. pushdownRules()       -- merges projects
+| PlannerImpl.java           |    3c. decomposeAggregates() -- no-op
+|                            |    3d. NestedFieldRewriter.rewrite() -- no-op here
+|                            |         (Correlate already present from expand.
+|                            |          Only fires for projection-only queries where
+|                            |          PPL left raw ITEM($0,'field') -- meaning expand
+|                            |          was NOT called because type-checker didn't reject.)
+|                            |    3e. mark()  -- Logical -> OpenSearch physical nodes
+|                            |         OpenSearchCorrelateRule, OpenSearchUncollectRule
+|                            |    3f. cbo()   -- VolcanoPlanner inserts ExchangeReducer
+|                            |
+|                            |  OUTPUT of createPlan() (optimized physical RelNode):
+|                            |    OpenSearchExchangeReducer         [SINGLETON]
+|                            |      OpenSearchProject(title=$2)     [datafusion]
+|                            |        OpenSearchFilter(>($5,4))     [datafusion]
+|                            |          OpenSearchCorrelate(req={0})[datafusion]
+|                            |            OpenSearchTableScan(blogs)[lucene,datafusion]
+|                            |            OpenSearchUncollect(...)   [datafusion]
++---------------------------+
+        |
+        | createPlan() returns to DefaultPlanExecutor
+        v
++---------------------------+
+| STEP 3.5:                  |  DefaultPlanExecutor continues:
+| DAG Build + Fork + Select  |
+|                            |    DAGBuilder.build(plan, capabilityRegistry, ...)
+| DefaultPlanExecutor.java   |      -> cuts at ExchangeReducer into stages
+| DAGBuilder.java            |      OUTPUT: QueryDAG with 2 stages:
+| PlanForker.java            |        Stage 1: ExchangeReducer -> StageInputScan(0)
+| PlanAlternativeSelector    |        Stage 0: Project -> Filter -> Correlate(Scan, Uncollect)
+|                            |
+|                            |    PlanForker.forkAll(dag)
+|                            |      -> creates per-backend plan alternatives
+|                            |
+|                            |    BackendPlanAdapter.adaptAll(dag)
+|                            |      -> adapts for chosen backend capabilities
+|                            |
+|                            |    PlanAlternativeSelector.selectAll(dag)
+|                            |      -> picks datafusion (only viable for Correlate)
+|                            |
+|                            |    FragmentConversionDriver.convertAll(dag)
+|                            |      -> calls convertor.convertFragment() per stage
+|                            |      (this is Step 4 below)
++---------------------------+
         |
         v
 +---------------------------+
-| UnifiedQueryService        |  Step 0: dotted-path -> expand translation
-| (translation layer)        |  (works around PPL type-checker ROW>INT reject)
+| STEP 4:                    |  FragmentConversionDriver.convertAll(dag):
+| Substrait Emission         |
+|                            |  Stage 0 (data node fragment):
+| DataFusionFragment-        |    DataFusionFragmentConvertor.convertFragment():
+| Convertor.java             |      -> convertToSubstrait(fragment)
+|  + NestedParentDedup-      |        -> visitor.apply(): walks tree top-down
+|    Rewriter.java           |          visit(Correlate) -> tryEmitUnnest()
+|                            |            -> emits ExtensionSingleRel("unnest_reshape")
+|                            |          visit(Filter), visit(Project) -> Isthmus normal
+|                            |      -> NestedParentDedupRewriter.rewrite(proto)
+|                            |          -> injects GROUP BY for parent dedup
+|                            |      returns byte[] (388 bytes)
+|                            |
+|                            |  Stage 1 (coordinator fragment):
+|                            |    DataFusionFragmentConvertor.convertFragment():
+|                            |      -> rewriteStageInputScans(): table="input-0"
+|                            |      -> Isthmus emits ReadRel("input-0")
+|                            |      returns byte[] (69 bytes passthrough)
++---------------------------+
+        |
+        | Both stage byte[] stored in QueryDAG
+        | DefaultPlanExecutor -> QueryScheduler.execute(context)
+        |   -> ExecutionGraph.build(dag)
+        |     -> StageExecutionBuilder per stage
+        |       -> ReduceStageExecutionFactory.createExecution(stage1)
+        v
++---------------------------+
+| STEP 5:                    |  DatafusionReduceSink constructor:
+| Exchange Setup             |    1. NativeBridge.registerPartitionStream("input-0", stage0Bytes)
+|                            |       [Rust] api::register_partition_stream():
+| Rust: api.rs               |         -> derive_schema_from_partial_plan(stage0 bytes)
+|                            |           -> collect_reads() finds ReadRel under ExtSingleRel
+|                            |           -> registers stub table, lowers plan, gets schema
+|                            |         -> registers StreamingTable "input-0"
+|                            |    2. NativeBridge.executeLocalPlan(stage1Bytes)
+|                            |       -> resolves ReadRel("input-0") -> StreamingTable
++---------------------------+
+        |
+        | Stage 0 bytes dispatched to data node shard
+        | ShardFragmentStageExecution sends via transport
+        v
++---------------------------+
+| STEP 6:                    |  [Rust] indexed_executor::execute_indexed():
+| DataFusion Execution       |    -> from_substrait_plan_unnest_aware(ctx, stage0Bytes)
+| (data node)                |      -> UnnestConsumer: ExtSingleRel -> LogicalPlan::Unnest
+|                            |      -> Standard consumer: Filter, Aggregate, Project
+| Rust: unnest_consumer.rs   |    -> extract_filter_expr(): skips post-unnest filters,
+|  + substrait_to_tree.rs    |       continues searching for pushable parent filters
+|  + indexed_executor.rs     |    -> create_physical_plan()
+|                            |    -> execute: Parquet -> Unnest -> Filter -> Dedup -> Project
+|                            |    -> Arrow RecordBatch (4 rows) streamed to coordinator
++---------------------------+
+        |
+        | Arrow batches over exchange (Flight transport)
+        | DatafusionPartitionSender -> StreamingTable channel
+        v
++---------------------------+
+| STEP 7:                    |  Coordinator drains StreamingTable "input-0"
+| Coordinator Passthrough    |    -> 4 rows pass through to DefaultPlanExecutor
+|                            |    -> UnifiedQueryService wraps as PPLResponse
+| (framework, no changes)    |    -> HTTP JSON response returned
 +---------------------------+
         |
         v
-+---------------------------+
-| PPL Frontend               |  Step 1: 'expand' builds Correlate + Uncollect;
-| (UnifiedQueryPlanner)      |  downstream filter/project see FLAT child cols
-+---------------------------+
-        |
-        v
-+---------------------------+
-| OpenSearchNestedField-     |  Safety net for plans that arrive with raw
-| Rewriter (logical rewrite) |  ITEM($arr,'field') refs (SQL path, future DSL):
-+---------------------------+  injects the same Correlate + Uncollect shape
-        |
-        v
-+---------------------------+
-| PlannerImpl                |  Step 2: containsSubQuery() guard protects the
-| (CBO + marking)            |  Correlate from the decorrelator; pushdown rules
-+---------------------------+  run as usual
-        |
-        v
-+---------------------------+
-| OpenSearchCorrelateRule /  |  Step 3: mark Correlate/Uncollect physical,
-| OpenSearchUncollectRule    |  force DataFusion backend; CBO inserts
-+---------------------------+  ExchangeReducer -> 2-stage distributed plan
-        |
-        v
-+---------------------------+
-| DataFusionFragment-        |  Step 4: visit(Correlate) emits
-| Convertor (Java->Substrait)|  ExtensionSingleRel("unnest_reshape:<col>|w=N");
-|  + NestedParentDedup-      |  proto post-pass injects
-|    Rewriter (proto pass)   |  GROUP BY [parent_cols, __row_id__] for dedup
-+---------------------------+
-        |
-        |  Substrait plan (per stage fragment)
-        v
-+---------------------------+
-| Rust: api.rs               |  Step 5: collect_reads() recurses through the
-| (exchange setup)           |  ExtensionSingleRel to find ReadRels, register
-+---------------------------+  exchange stubs, derive schemas
-        |
-        v
-+---------------------------+
-| Rust: unnest_consumer.rs   |  Step 6: ExtensionSingleRel ->
-| + substrait_to_tree.rs     |  LogicalPlan::Unnest; parent filters still
-+---------------------------+  extracted for Parquet pushdown
-        |
-        v
-+---------------------------+
-| DataFusion execution       |  ParquetExec -> Unnest -> Filter -> Aggregate
-| (data node, stage 0)       |  (parent dedup) -> Project
-+---------------------------+
-        |
-        |  Arrow batches over exchange
-        v
-+---------------------------+
-| Coordinator (stage 1)      |  Step 7: StageInputScan passthrough / final agg
-+---------------------------+
-        |
-        v
-     Response rows
+  {"columns":["title"],"rows":[["First post"],["Third post"],["Fourth post"],["Fifth post"]]}
 ```
-
-### 4.3 Pipeline diagram (expanded, with input/output at each stage)
+### 4.3 Detailed stage breakdown (with input/output at each stage)
 
 Running example throughout: `source=blogs | where comments.score > 4 | fields title`
 
@@ -313,7 +396,7 @@ Expected result: 4 parent titles (those with at least one comment.score > 4).
 
 ---
 
-#### STAGE 0: Translation Layer (UnifiedQueryService.tryInjectExpand)
+#### STEP 1: Translation Layer (UnifiedQueryService.tryInjectExpand)
 
 ```
 +------------------------------------------------------------------------------+
@@ -321,6 +404,15 @@ Expected result: 4 parent titles (those with at least one comment.score > 4).
 |                                                                               |
 | FILE: UnifiedQueryService.java (tryInjectExpand method)                       |
 | CHANGE: Implemented. ~60 lines. Catch-and-retry on type-checker rejection.    |
+|                                                                               |
+| PROBLEM:                                                                      |
+|   PPL resolves "comments.score" to ITEM($0,'score').                          |
+|   ITEM(ARRAY<ROW(author,score,text)>, 'score') -> return type = ROW           |
+|   ROW > 4 -> type error: "Unsupported conversion for Relational Data type"   |
+|   The plan is NEVER created. Crash before any RelNode exists.                 |
+|   This happens because Calcite's ITEM operator on ARRAY<ROW> returns the      |
+|   element type (the whole ROW), not the specific field type (INTEGER).         |
+|   The type-checker then rejects ROW in a comparison/aggregation context.      |
 |                                                                               |
 | HOW IT WORKS:                                                                 |
 |   1. FIRST: try planner.plan(originalQuery) as-is                             |
@@ -380,7 +472,7 @@ Expected result: 4 parent titles (those with at least one comment.score > 4).
 
 ---
 
-#### STAGE 1: PPL Frontend (UnifiedQueryPlanner)
+#### STEP 2: PPL Frontend (UnifiedQueryPlanner)
 
 ```
 +------------------------------------------------------------------------------+
@@ -393,36 +485,138 @@ Expected result: 4 parent titles (those with at least one comment.score > 4).
 |   "source=blogs | expand comments | where score > 4 | fields title"          |
 |                                                                               |
 | WHAT HAPPENS:                                                                 |
+|                                                                               |
 |   - "source=blogs" -> LogicalTableScan(blogs)                                 |
 |     Schema: [comments: ARRAY(ROW(author,score,text)), rating, title, views]   |
 |                                                                               |
 |   - "expand comments" -> PPL natively creates Correlate + Uncollect           |
-|     Post-expand row layout (7 cols):                                          |
-|     [comments, rating, title, views | author, score, text]                    |
-|       indices:  $0       $1      $2    $3     $4      $5     $6               |
-|     (originals first at same indices, struct fields appended)                 |
+|     The array column is exploded: each parent row produces N child rows,      |
+|     one per array element. The struct fields (author, score, text) become     |
+|     flat columns appended after the original parent columns.                  |
 |                                                                               |
-|   - "where score > 4" -> LogicalFilter(condition=[$5 > 4])                   |
-|     score is now at index $5, type INTEGER. $5 > 4 type-checks fine.          |
+|   - "where score > 4" -> LogicalFilter(condition=[score > 4])                 |
+|     After expand, 'score' is a flat INTEGER column. The comparison            |
+|     INTEGER > 4 type-checks fine (no ROW type issue).                         |
 |                                                                               |
-|   - "fields title" -> LogicalProject(title=$2)                                |
+|   - "fields title" -> LogicalProject(title)                                   |
 |                                                                               |
-| OUTPUT (Calcite RelNode tree):                                                |
-|   LogicalProject(title=$2)                                                    |
-|     LogicalFilter(condition=[$5 > 4])                                         |
-|       LogicalCorrelate(INNER, $cor0, requiredColumns={0})                     |
-|         LogicalTableScan(blogs)            <- LEFT: parent rows               |
-|         Uncollect                          <- RIGHT: explodes the array       |
-|           LogicalProject($cor0.comments)                                      |
-|             LogicalValues(oneRow)                                              |
+| OUTPUT (Calcite RelNode tree -- actual PPL output from the log):              |
+|   LogicalProject(title=$1)                                                    |
+|     LogicalFilter(condition=[$4 > 4])                                         |
+|       LogicalProject(rating=$1, title=$2, views=$3, author=$4, score=$5,      |
+|                      text=$6)        <- renaming layer (PPL inserts this      |
+|         LogicalCorrelate(INNER, $cor0, requiredColumns={0})   to give clean   |
+|           LogicalTableScan(blogs)            <- LEFT: parent rows  names to   |
+|           Uncollect                          <- RIGHT: explodes    post-expand |
+|             LogicalProject($cor0.comments)      the array          columns)   |
+|               LogicalValues(oneRow)                                            |
+|                                                                               |
+| NOTE: title=$1 and score=$4 here because they reference the intermediate      |
+| renaming Project's output (where title is position 1, score is position 4).   |
+| pushdownRules (Step 3b) will later merge this renaming Project away,          |
+| shifting to title=$2 and score=$5 (raw Correlate output positions).           |
 +------------------------------------------------------------------------------+
         |
         v
 ```
 
+
+#### STEP 3: PlannerImpl (all sub-steps: rewrite + mark + CBO)
+
+```
++------------------------------------------------------------------------------+
+| STAGE 3: PLANNER (RULES + MARKING + CBO)                                     |
+|                                                                               |
+| FILE: PlannerImpl.java (MODIFIED - containsSubQuery guard)                    |
+| FILES: OpenSearchCorrelateRule.java, OpenSearchUncollectRule.java (NEW)        |
+| CHANGE NEEDED: Guard + 2 marking rules + 2 physical RelNode classes           |
+|                                                                               |
+| PROBLEMS (without our changes):                                               |
+|                                                                               |
+|   PROBLEM 1 -- Decorrelator corruption:                                       |
+|   The existing removeSubQueries() phase runs RelDecorrelator unconditionally. |
+|   RelDecorrelator sees our Correlate+Uncollect (which represents UNNEST) and  |
+|   tries to "decorrelate" it -- pushing the Filter INTO the Uncollect leg,      |
+|   destroying the shape that tryEmitUnnest() in Step 4 recognizes.             |
+|   Result: the convertor sees an unrecognizable tree and isthmus emits it as   |
+|   a JOIN (semantically wrong), or the plan fails entirely.                    |
+|   FIX: containsSubQuery() guard -- skip decorrelator when no real subquery.   |
+|                                                                               |
+|   PROBLEM 2 -- Unmarked orphans (Correlate and Uncollect):                    |
+|   The marking phase requires EVERY node in the tree to be converted from      |
+|   a generic Logical node to an OpenSearch physical node (OpenSearchRelNode).   |
+|   Without our marking rules, LogicalCorrelate and Uncollect survive the       |
+|   marking pass as "orphans" -- no rule claims them, no backend is assigned.   |
+|   Result: plan fails with "unmarked child [LogicalCorrelate]" during the      |
+|   forking/selection phase, because no backend alternative can be created.     |
+|   FIX: OpenSearchCorrelateRule and OpenSearchUncollectRule mark them           |
+|   as [datafusion]-only. The backend is FORCED (not derived from children)     |
+|   because UNNEST reads Parquet LIST<STRUCT> directly, which only DataFusion   |
+|   can do -- normal intersection-of-children logic would produce an empty      |
+|   backend set when the scan is lucene-only. The rule also widens the child    |
+|   TableScan's viability to include [datafusion] so PlanForker can match.      |
+|                                                                               |
+| INPUT (from PPL Frontend):                                                    |
+|   LogicalProject(title=$1)                                                    |
+|     LogicalFilter($4 > 4)                                                     |
+|       LogicalProject(rating=$1,title=$2,views=$3,author=$4,score=$5,text=$6) |
+|         LogicalCorrelate(INNER, $cor0, req={0})                               |
+|           LogicalTableScan(blogs)                                             |
+|           Uncollect(Project($cor0.comments, oneRow))                          |
+|                                                                               |
+| SUB-STEP 3a: removeSubQueries()                                              |
+|   containsSubQuery() = false (no RexSubQuery in this tree)                    |
+|   -> decorrelator SKIPPED entirely                                            |
+|   WHY THIS MATTERS: Without this guard, RelDecorrelator would push the        |
+|   Filter($5>4) DOWN into the Uncollect leg, destroying the shape that         |
+|   the Substrait emitter recognizes. This was a hard-to-diagnose bug.          |
+|                                                                               |
+| SUB-STEP 3b: pushdownRules()                                                  |
+|   Standard Calcite rules run. FilterProjectTranspose merges the intermediate  |
+|   projection. Plan becomes:                                                    |
+|   LogicalProject(title=$2)                                                    |
+|     LogicalFilter($5 > 4)                                                     |
+|       LogicalCorrelate(INNER, $cor0, req={0})                                 |
+|         LogicalTableScan(blogs)                                               |
+|         Uncollect(...)                                                         |
+|                                                                               |
+| SUB-STEP 3c: Marking (HepPlanner with marking rules)                          |
+|   Every Logical node -> OpenSearch physical equivalent:                        |
+|     OpenSearchProject(title=$2)                        [datafusion]            |
+|       OpenSearchFilter(>($5, 4))                       [datafusion]            |
+|         OpenSearchCorrelate(INNER, req={0})            [datafusion]            |
+|           OpenSearchTableScan(blogs)                   [lucene, datafusion]    |
+|           OpenSearchUncollect(...)                     [datafusion]            |
+|                                                                               |
+|   OpenSearchCorrelateRule forces viableBackends=[datafusion] because the       |
+|   whole UNNEST operation runs in DataFusion (reads Parquet LIST<STRUCT>).      |
+|                                                                               |
+| SUB-STEP 3d: CBO (VolcanoPlanner)                                             |
+|   Root demands SINGLETON(COORDINATOR).                                        |
+|   Correlate is a two-input operator not in the DistributionDeriveRule ->       |
+|   CBO cannot derive SINGLETON through it -> inserts ExchangeReducer.          |
+|                                                                               |
+| OUTPUT (single RelNode tree -- NOT yet split into stages):                    |
+|   OpenSearchExchangeReducer(exchange=[distributionType=SINGLETON])            |
+|     OpenSearchProject(title=[$2], viableBackends=[[datafusion]])              |
+|       OpenSearchFilter(>($5, 4), viableBackends=[[datafusion]])               |
+|         OpenSearchCorrelate(INNER, req={0}, viableBackends=[[datafusion]])    |
+|           OpenSearchTableScan(blogs, viableBackends=[[lucene, datafusion]])   |
+|           OpenSearchUncollect(viableBackends=[[datafusion]])                  |
+|                                                                               |
+| NOTE: This is still ONE tree. The ExchangeReducer at the top is a MARKER     |
+| that tells DAGBuilder (Step 3.5) WHERE to cut. The actual split into          |
+| Stage 0 + Stage 1 happens in the NEXT step, not here.                        |
++------------------------------------------------------------------------------+
+        |
+        | (two separate fragments, one per stage)
+        v
+```
+
+---
 ---
 
-#### STAGE 2: Logical Rewrite (OpenSearchNestedFieldRewriter)
+#### STEP 3 sub-step 3d: OpenSearchNestedFieldRewriter (detail)
 
 ```
 +------------------------------------------------------------------------------+
@@ -438,10 +632,10 @@ Expected result: 4 parent titles (those with at least one comment.score > 4).
 |   expressions remain because expand resolved them into positional $-refs.     |
 |   The rewriter fires as a NO-OP.                                              |
 |                                                                               |
-| WHEN IT DOES FIRE — queries where nested dotted refs are ONLY in FIELDS:      |
+| WHEN IT DOES FIRE -- queries where nested dotted refs are ONLY in FIELDS:      |
 |                                                                               |
 |   These pass PPL type-checker (ITEM in PROJECT is type-safe) so they arrive   |
-|   here WITHOUT a Correlate — just raw ITEM expressions in the Project:        |
+|   here WITHOUT a Correlate -- just raw ITEM expressions in the Project:        |
 |                                                                               |
 |   Example: "source=blogs | fields title, comments.author"                     |
 |   Example: "source=blogs | where views > 100 | fields title, comments.author" |
@@ -495,70 +689,56 @@ Expected result: 4 parent titles (those with at least one comment.score > 4).
 
 ---
 
-#### STAGE 3: PlannerImpl (Optimization Rules + Marking + CBO)
+#### STEP 3.5: DAG Build, Fork, and Select (DefaultPlanExecutor)
 
 ```
 +------------------------------------------------------------------------------+
-| STAGE 3: PLANNER (RULES + MARKING + CBO)                                     |
+| STEP 3.5: DAG BUILD + FORK + SELECT                                          |
 |                                                                               |
-| FILE: PlannerImpl.java (MODIFIED - containsSubQuery guard)                    |
-| FILES: OpenSearchCorrelateRule.java, OpenSearchUncollectRule.java (NEW)        |
-| CHANGE NEEDED: Guard + 2 marking rules + 2 physical RelNode classes           |
+| FILES: DefaultPlanExecutor.java, DAGBuilder.java, PlanForker.java,            |
+|        BackendPlanAdapter.java, PlanAlternativeSelector.java                  |
+| CHANGE NEEDED: None (framework code, unmodified)                              |
 |                                                                               |
-| INPUT: LogicalProject -> LogicalFilter -> LogicalCorrelate(Scan, Uncollect)   |
-|                                                                               |
-| SUB-STEP 3a: removeSubQueries()                                              |
-|   containsSubQuery() = false (no RexSubQuery in this tree)                    |
-|   -> decorrelator SKIPPED entirely                                            |
-|   WHY THIS MATTERS: Without this guard, RelDecorrelator would push the        |
-|   Filter($5>4) DOWN into the Uncollect leg, destroying the shape that         |
-|   the Substrait emitter recognizes. This was a hard-to-diagnose bug.          |
-|                                                                               |
-| SUB-STEP 3b: pushdownRules()                                                  |
-|   Standard Calcite rules run. FilterProjectTranspose merges the intermediate  |
-|   projection. Plan becomes:                                                    |
-|   LogicalProject(title=$2)                                                    |
-|     LogicalFilter($5 > 4)                                                     |
-|       LogicalCorrelate(INNER, $cor0, req={0})                                 |
-|         LogicalTableScan(blogs)                                               |
-|         Uncollect(...)                                                         |
-|                                                                               |
-| SUB-STEP 3c: Marking (HepPlanner with marking rules)                          |
-|   Every Logical node -> OpenSearch physical equivalent:                        |
-|     OpenSearchProject(title=$2)                        [datafusion]            |
-|       OpenSearchFilter(>($5, 4))                       [datafusion]            |
-|         OpenSearchCorrelate(INNER, req={0})            [datafusion]            |
-|           OpenSearchTableScan(blogs)                   [lucene, datafusion]    |
-|           OpenSearchUncollect(...)                     [datafusion]            |
-|                                                                               |
-|   OpenSearchCorrelateRule forces viableBackends=[datafusion] because the       |
-|   whole UNNEST operation runs in DataFusion (reads Parquet LIST<STRUCT>).      |
-|                                                                               |
-| SUB-STEP 3d: CBO (VolcanoPlanner)                                             |
-|   Root demands SINGLETON(COORDINATOR).                                        |
-|   Correlate is a two-input operator not in the DistributionDeriveRule ->       |
-|   CBO cannot derive SINGLETON through it -> inserts ExchangeReducer.          |
-|                                                                               |
-| OUTPUT: TWO-STAGE distributed plan                                            |
-|   Stage 1 (coordinator):                                                      |
-|     OpenSearchExchangeReducer                                                 |
-|       OpenSearchStageInputScan(childStageId=0)                                |
-|                                                                               |
-|   Stage 0 (data node):                                                        |
+| INPUT: The optimized RelNode from PlannerImpl.createPlan():                   |
+|   OpenSearchExchangeReducer                                                   |
 |     OpenSearchProject(title=$2)                                               |
 |       OpenSearchFilter(>($5, 4))                                              |
 |         OpenSearchCorrelate(INNER, req={0})                                   |
 |           OpenSearchTableScan(blogs)                                          |
 |           OpenSearchUncollect(...)                                             |
+|                                                                               |
+| WHAT HAPPENS (sequential calls in DefaultPlanExecutor):                       |
+|                                                                               |
+|   1. DAGBuilder.build(plan, capabilityRegistry, clusterService, ...)          |
+|      Splits the plan at the ExchangeReducer boundary into stages:             |
+|      OUTPUT: QueryDAG with 2 stages:                                          |
+|        Stage 1 (coordinator): ExchangeReducer -> StageInputScan(childId=0)    |
+|        Stage 0 (data node):   Project -> Filter -> Correlate(Scan, Uncollect) |
+|                                                                               |
+|   2. PlanForker.forkAll(dag)                                                  |
+|      For each stage, creates plan alternatives per backend. Stage 0 has       |
+|      Correlate marked [datafusion] only, so only one alternative exists.      |
+|                                                                               |
+|   3. BackendPlanAdapter.adaptAll(dag)                                         |
+|      Adapts the plan for the chosen backend's capabilities (e.g. predicate    |
+|      annotation for DataFusion delegation).                                   |
+|                                                                               |
+|   4. PlanAlternativeSelector.selectAll(dag)                                   |
+|      Picks the DataFusion alternative (the only viable one for nested).       |
+|                                                                               |
+|   5. FragmentConversionDriver.convertAll(dag)                                 |
+|      Calls DataFusionFragmentConvertor.convertFragment() per stage.           |
+|      (This is STEP 4 below.)                                                  |
+|                                                                               |
+| OUTPUT: QueryDAG with stages ready for Substrait conversion.                  |
 +------------------------------------------------------------------------------+
         |
-        | (two separate fragments, one per stage)
         v
 ```
 
 ---
 
-#### STAGE 4a: Substrait Emission (Stage 0 - Data Node Fragment)
+#### STEP 4: Substrait Emission (Stage 0 - Data Node Fragment)
 
 ```
 +------------------------------------------------------------------------------+
@@ -568,6 +748,15 @@ Expected result: 4 parent titles (those with at least one comment.score > 4).
 | FILE: NestedParentDedupRewriter.java (NEW - 519 lines, proto post-pass)       |
 | FILE: UnnestExtensionDetail.java (NEW - metadata carrier)                     |
 | CHANGE NEEDED: Correlate interception + unnest extension + dedup rewriter     |
+|                                                                               |
+| PROBLEM (without our change):                                                 |
+|   Isthmus (the Calcite->Substrait serializer) has no handler for Correlate    |
+|   over Uncollect. Its default behavior emits it as a JOIN -- semantically       |
+|   wrong (a JOIN does cross-product; we need per-row array explosion).          |
+|   Additionally, Substrait has no first-class UNNEST operator, so even if      |
+|   Isthmus recognized it, there's no standard rel to emit.                     |
+|   Without the dedup post-pass: a parent with 2 matching children appears      |
+|   twice in the output (dave+eve both match -> Third post returned twice).     |
 |                                                                               |
 | INPUT (Stage 0 fragment):                                                     |
 |   OpenSearchProject(title=$2)                                                 |
@@ -614,7 +803,7 @@ Expected result: 4 parent titles (those with at least one comment.score > 4).
 
 ---
 
-#### STAGE 4b: Substrait Emission (Stage 1 - Coordinator Fragment)
+#### STEP 4 (coordinator): Substrait Emission (Stage 1 - Coordinator Fragment)
 
 ```
 +------------------------------------------------------------------------------+
@@ -644,7 +833,7 @@ Expected result: 4 parent titles (those with at least one comment.score > 4).
 
 ---
 
-#### STAGE 5: Exchange Setup (Rust, api.rs)
+#### STEP 5: Exchange Setup (Rust, api.rs)
 
 ```
 +------------------------------------------------------------------------------+
@@ -652,6 +841,16 @@ Expected result: 4 parent titles (those with at least one comment.score > 4).
 |                                                                               |
 | FILE: api.rs (MODIFIED - ExtensionSingle arm in collect_reads)                |
 | CHANGE NEEDED: 5-line addition to collect_reads() match arms                  |
+|                                                                               |
+| PROBLEM (without our change):                                                 |
+|   The coordinator derives stage 0's output schema by lowering stage 0's plan  |
+|   on a throwaway session. To lower, it must register a stub table for every   |
+|   ReadRel found in the plan. But collect_reads() only walks known rel types   |
+|   (Read, Filter, Project, Aggregate...) -- NOT ExtensionSingleRel.             |
+|   Our unnest wraps ReadRel("blogs") INSIDE an ExtensionSingleRel. Without     |
+|   the arm: ReadRel never found -> stub never registered -> lowering fails:    |
+|   "Error during planning: No table named 'blogs'"                             |
+|   This was the root cause of ALL 166 errors in the initial merge attempt.     |
 |                                                                               |
 | INPUT: Stage 0 plan bytes (388 bytes) + Stage 1 plan bytes (69 bytes)         |
 |                                                                               |
@@ -689,7 +888,7 @@ Expected result: 4 parent titles (those with at least one comment.score > 4).
 
 ---
 
-#### STAGE 6: DataFusion Execution (Data Node, Stage 0)
+#### STEP 6: DataFusion Execution (Data Node, Stage 0)
 
 ```
 +------------------------------------------------------------------------------+
@@ -698,6 +897,20 @@ Expected result: 4 parent titles (those with at least one comment.score > 4).
 | FILE: unnest_consumer.rs (NEW - 296 lines)                                    |
 | FILE: substrait_to_tree.rs (MODIFIED - filter extraction continuation)        |
 | CHANGE NEEDED: Full unnest consumer + filter extraction fix                   |
+|                                                                               |
+| PROBLEM (without our changes):                                                |
+|   1. No consumer: DataFusion's stock Substrait consumer has no handler for    |
+|      ExtensionSingleRel("unnest_reshape:..."). It would error with            |
+|      "Missing handler for extension single rel". The unnest_consumer.rs       |
+|      provides this handler, building a native LogicalPlan::Unnest.            |
+|   2. Filter loss: the shard executor tries to push filters to the Parquet     |
+|      scan for row-group pruning. When it encounters an Unnest node above a    |
+|      Filter, the old code ABORTED filter extraction entirely (returned None). |
+|      This meant a valid parent filter (e.g. views > 100) sitting BELOW the    |
+|      unnest was silently dropped -- losing 22 scalar-filter results.           |
+|   3. Null semantics: DataFusion's default unnest preserves nulls (a parent    |
+|      with skills=null produces one all-NULL row). OpenSearch nested semantics  |
+|      require zero rows for empty/absent arrays. preserve_nulls=false fixes it.|
 |                                                                               |
 | INPUT: Stage 0 Substrait (388 bytes)                                          |
 |                                                                               |
@@ -790,7 +1003,7 @@ Expected result: 4 parent titles (those with at least one comment.score > 4).
 
 ---
 
-#### STAGE 7: Coordinator Passthrough + Response
+#### STEP 7: Coordinator Passthrough + Response
 
 ```
 +------------------------------------------------------------------------------+

@@ -262,19 +262,41 @@ public class DefaultPlanExecutor extends HandledTransportAction<AnalyticsQueryRe
         );
         plannerContext.setPlannerSettings(plannerSettings);
         RelNode plan = PlannerImpl.createPlan(logicalFragment, plannerContext);
+        //step 4
         // [NESTED-POC] Trace the executor's view of the optimized plan + DAG. Grep: NESTED-POC.
         logger.info("[NESTED-POC] ====== After PlannerImpl.createPlan() ======");
         logger.info("[NESTED-POC] Final optimized plan:\n{}", RelOptUtil.toString(plan));
         logger.info("[NESTED-POC] Final plan row type: {}", plan.getRowType());
         final String fullPlan = profile ? RelOptUtil.toString(plan) : null;
+
+        //step 5
         QueryDAG dag = DAGBuilder.build(plan, capabilityRegistry, clusterService, indexNameExpressionResolver);
+        //step 6
+
         logger.info("[NESTED-POC] ====== QueryDAG built ======\n{}", dag);
         PlanForker.forkAll(dag, capabilityRegistry);
         BackendPlanAdapter.adaptAll(dag, capabilityRegistry);
         // Collapse multi-backend stages to a single chosen alternative before conversion
         // so the convertor runs once per stage and the wire request carries one PlanAlternative.
+
+        // step 7
         PlanAlternativeSelector.selectAll(dag, capabilityRegistry, preferMetadataDriver);
-        FragmentConversionDriver.convertAll(dag, capabilityRegistry);
+
+        // step 8
+        // [NESTED] Mark whether the ORIGINAL query text used explicit `expand` before conversion.
+        // Dotted nested syntax carries vanilla's PARENT semantics (existence check); explicit
+        // `expand` is a user-requested per-child flatten. NestedParentDedupRewriter reads this to
+        // decide whether to restore parent row arity. querySource is the untranslated user text.
+        org.opensearch.analytics.NestedQueryOrigin.setExplicitExpand(
+            org.opensearch.analytics.NestedQueryOrigin.textUsesExplicitExpand(querySource)
+        );
+        try {
+            FragmentConversionDriver.convertAll(dag, capabilityRegistry);
+        } finally {
+            org.opensearch.analytics.NestedQueryOrigin.clear();
+        }
+
+        // step 9
         final long planningTimeNanos = System.nanoTime() - planStartNanos;
         final long planningTimeMs = TimeUnit.NANOSECONDS.toMillis(planningTimeNanos);
         logger.debug("[DefaultPlanExecutor] QueryDAG:\n{}", dag);

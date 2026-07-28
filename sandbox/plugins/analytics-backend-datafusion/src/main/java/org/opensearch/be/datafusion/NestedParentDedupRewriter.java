@@ -75,6 +75,14 @@ final class NestedParentDedupRewriter {
      * {@code count} nested shape; otherwise returns {@code plan} unchanged.
      */
     static Plan rewrite(Plan plan) {
+        // [NESTED] Explicit `expand` is the user opting INTO the per-child flatten (Splunk mvexpand
+        // semantics) — no parent-arity restoration of any kind. Only dotted nested syntax carries
+        // vanilla's parent semantics. The origin marker is set from the ORIGINAL query text by
+        // DefaultPlanExecutor around fragment conversion.
+        if (org.opensearch.analytics.NestedQueryOrigin.isExplicitExpand()) {
+            LOGGER.info("[NESTED] parent-dedup: skipped (explicit expand in original query text)");
+            return plan;
+        }
         if (plan.getRelationsCount() != 1) {
             return plan; // multi-root plans are not the single-fragment nested shape we target
         }
@@ -104,8 +112,11 @@ final class NestedParentDedupRewriter {
      */
     private static Rel tryDedup(Rel top) {
         switch (top.getRelTypeCase()) {
-            case AGGREGATE:
-                return tryCountDedup(top);
+            case AGGREGATE: {
+                Rel counted = tryCountDedup(top);
+                if (counted != top) return counted;
+                return tryAggDedup(top);
+            }
             case PROJECT:
                 return tryDocsDedup(top);
             case FETCH: {
@@ -190,6 +201,67 @@ final class NestedParentDedupRewriter {
         outProj.setCommon(RelCommon.newBuilder().setEmit(emit.build()).build());
         LOGGER.info("[NESTED] parent-dedup(docs): group-by [{} parent cols + __row_id__@{}] then re-project", projCols.size(), w);
         return Rel.newBuilder().setProject(outProj.build()).build();
+    }
+
+    /**
+     * General parent-aggregate shape: an UNGROUPED {@code Aggregate} whose measures HAVE arguments
+     * (e.g. {@code sum(count)}, {@code avg(rating)} over a PARENT field) above a PARENT-only
+     * projection of the nested-filter unnest chain — the
+     * {@code where subs.views > 40 | stats sum(count)} class.
+     *
+     * <p>Without dedup the flatten makes the parent field appear once per matching CHILD, so the
+     * aggregate double-counts (sum=5 where vanilla's parent semantics says 3). Fix: apply the
+     * docs-dedup transform to the projection UNDER the aggregate (group by
+     * [projected parent cols + __row_id__], re-project in original order) — one row per matching
+     * parent — and leave the user's aggregate untouched above it. The transform preserves the
+     * projection's output columns and order, so the measure's positional references stay valid.
+     *
+     * <p>Child-metric aggregates ({@code avg(subs.views)}) reference an exploded-child column, so
+     * their projection is NOT parent-only and {@code tryDocsDedup} leaves it unchanged — those keep
+     * per-child semantics, matching vanilla's nested aggregation behavior.
+     *
+     * <p>KNOWN LIMIT (upstream of this pass): a query mixing a dotted FILTER with a dotted CHILD
+     * measure ({@code where subs.views > 40 | stats sum(count), avg(subs.views)}) is rewritten by
+     * OpenSearchNestedFieldRewriter with TWO independent unnests (one for the filter, a second for
+     * the measure over the filter's restored rows), producing a per-parent CROSS PRODUCT of children
+     * (a 2-child parent contributes 4 rows). No dedup at this layer can repair that; the fix is
+     * single-unnest reuse in the Calcite rewriter.
+     */
+    private static Rel tryAggDedup(Rel aggRel) {
+        AggregateRel agg = aggRel.getAggregate();
+        if (isUngrouped(agg) == false) return aggRel; // `stats ... by <dim>` groups by a dim — leave
+        if (agg.getMeasuresCount() == 0) return aggRel;
+        if (agg.hasInput() == false) return aggRel;
+
+        Rel input = agg.getInput();
+        // Walk through stacked projections: try the docs-dedup at each level; the transform itself
+        // verifies the parent-only condition and the reshape beneath.
+        if (input.getRelTypeCase() == Rel.RelTypeCase.PROJECT) {
+            Rel deduped = tryDocsDedup(input);
+            if (deduped != input) {
+                LOGGER.info(
+                    "[NESTED] parent-dedup(agg): deduped parent projection beneath {}-measure aggregate",
+                    agg.getMeasuresCount()
+                );
+                return aggRel.toBuilder().setAggregate(agg.toBuilder().setInput(deduped).build()).build();
+            }
+            // One level deeper: Project(computed measure args, e.g. eval c2 = count + 0) over the
+            // parent-only passthrough Project. Safe because tryDocsDedup preserves the inner
+            // projection's output columns AND order (group by [projected cols + __row_id__], then
+            // re-project positions 0..N-1), so the outer projection's positional refs remain valid.
+            ProjectRel outer = input.getProject();
+            if (outer.hasInput() && outer.getInput().getRelTypeCase() == Rel.RelTypeCase.PROJECT) {
+                Rel dedupedInner = tryDocsDedup(outer.getInput());
+                if (dedupedInner != outer.getInput()) {
+                    LOGGER.info("[NESTED] parent-dedup(agg): deduped inner parent projection (stacked shape)");
+                    Rel newOuter = input.toBuilder()
+                        .setProject(outer.toBuilder().setInput(dedupedInner).build())
+                        .build();
+                    return aggRel.toBuilder().setAggregate(agg.toBuilder().setInput(newOuter).build()).build();
+                }
+            }
+        }
+        return aggRel;
     }
 
     /**
