@@ -14,7 +14,9 @@ import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.RelShuttleImpl;
 import org.apache.calcite.rel.core.CorrelationId;
 import org.apache.calcite.rel.core.JoinRelType;
+import org.apache.calcite.rel.core.AggregateCall;
 import org.apache.calcite.rel.core.Uncollect;
+import org.apache.calcite.rel.logical.LogicalAggregate;
 import org.apache.calcite.rel.logical.LogicalCorrelate;
 import org.apache.calcite.rel.logical.LogicalFilter;
 import org.apache.calcite.rel.logical.LogicalProject;
@@ -27,6 +29,11 @@ import org.apache.calcite.rex.RexInputRef;
 import org.apache.calcite.rex.RexLiteral;
 import org.apache.calcite.rex.RexNode;
 import org.apache.calcite.rex.RexShuttle;
+import org.apache.calcite.sql.SqlFunction;
+import org.apache.calcite.sql.SqlFunctionCategory;
+import org.apache.calcite.sql.SqlKind;
+import org.apache.calcite.sql.type.OperandTypes;
+import org.apache.calcite.sql.type.ReturnTypes;
 import org.apache.calcite.sql.type.SqlTypeName;
 import org.apache.calcite.util.ImmutableBitSet;
 import org.apache.logging.log4j.LogManager;
@@ -74,6 +81,43 @@ public final class OpenSearchNestedFieldRewriter {
 
     private static final Logger LOGGER = LogManager.getLogger(OpenSearchNestedFieldRewriter.class);
 
+    /**
+     * Synthetic scalar function: {@code nested_any_match(arrayCol, 'fieldName', 'op', literal) → BOOLEAN}.
+     * Emitted by the filter rewrite in place of Correlate+Uncollect. The Substrait emission maps this
+     * to a scalar function call "nested_any_match"; on the Rust side a UDF of the same name builds the
+     * equivalent {@code array_any_match(col, s -> get_field(s, field) op value)} lambda expression and
+     * evaluates it. Row count is never changed — one boolean per parent row.
+     */
+    public static final SqlFunction NESTED_ANY_MATCH_OP = new SqlFunction(
+        "NESTED_ANY_MATCH",
+        SqlKind.OTHER_FUNCTION,
+        ReturnTypes.BOOLEAN_NULLABLE,
+        null,
+        OperandTypes.ANY,
+        SqlFunctionCategory.USER_DEFINED_FUNCTION
+    );
+
+    /**
+     * Synthetic scalar function: {@code nested_any_match_expr(arrayCol, '<json expr tree>') → BOOLEAN}.
+     * Generalization of {@link #NESTED_ANY_MATCH_OP} for compound (AND/OR/NOT), arithmetic
+     * (+,-,*,/,%), or otherwise-shaped predicates on ONE array column that {@code NESTED_ANY_MATCH}'s
+     * flat (field, op, value) triple can't express — e.g. {@code subs.views > 65 and subs.views % 2 =
+     * 0} (a single element must satisfy the WHOLE compound condition — matches vanilla OpenSearch's
+     * native {@code nested} query + Painless script semantics, confirmed by direct comparison: vanilla
+     * requires ONE element to jointly satisfy every clause, never independent per-clause existence
+     * checks). The second argument is a JSON string describing the per-element predicate tree — see
+     * {@link ExprTreeBuilder} for the node shapes; the Rust {@code nested_any_match_expr} UDF parses
+     * and evaluates it per array element, short-circuiting on the first match. Row count never changes.
+     */
+    public static final SqlFunction NESTED_ANY_MATCH_EXPR_OP = new SqlFunction(
+        "NESTED_ANY_MATCH_EXPR",
+        SqlKind.OTHER_FUNCTION,
+        ReturnTypes.BOOLEAN_NULLABLE,
+        null,
+        OperandTypes.ANY,
+        SqlFunctionCategory.USER_DEFINED_FUNCTION
+    );
+
     private OpenSearchNestedFieldRewriter() {}
 
     /**
@@ -91,11 +135,41 @@ public final class OpenSearchNestedFieldRewriter {
     /**
      * Bottom-up shuttle: children are rewritten first (so a node always sees an already-unnested
      * input where applicable), then the node itself is rewritten if it carries {@code ITEM} refs.
+     *
+     * <p>{@code aggregateClaimedProjects} tracks {@link LogicalProject} instances that {@code
+     * visit(LogicalAggregate)} has already routed through the unnest-injecting rewrite (because
+     * their {@code ITEM} references feed a GROUP BY key or aggregate-function argument — a genuine
+     * grain change, same as vanilla's {@code expand} command). {@code visit(LogicalProject)} must
+     * NOT re-rewrite those as plain (first-element) projections; identity-based membership in this
+     * set is the signal that a Project was already handled at the Aggregate level.
      */
     private static final class NestedShuttle extends RelShuttleImpl {
+        private final java.util.Set<LogicalProject> aggregateClaimedProjects = java.util.Collections.newSetFromMap(
+            new java.util.IdentityHashMap<>()
+        );
+
+        @Override
+        public RelNode visit(LogicalAggregate aggregate) {
+            RelNode rewrittenInput = null;
+            if (aggregate.getInput() instanceof LogicalProject childProject) {
+                RelNode candidate = rewriteAggregateInputProject(aggregate, childProject);
+                if (candidate != childProject) {
+                    aggregateClaimedProjects.add(childProject);
+                    rewrittenInput = candidate.accept(this);
+                }
+            }
+            LogicalAggregate visited = rewrittenInput != null
+                ? (LogicalAggregate) aggregate.copy(aggregate.getTraitSet(), List.of(rewrittenInput))
+                : (LogicalAggregate) super.visitChildren(aggregate);
+            return visited;
+        }
+
         @Override
         public RelNode visit(LogicalProject project) {
             LogicalProject visited = (LogicalProject) super.visitChildren(project);
+            if (aggregateClaimedProjects.contains(project)) {
+                return visited;
+            }
             return rewriteProject(visited);
         }
 
@@ -106,9 +180,105 @@ public final class OpenSearchNestedFieldRewriter {
         }
     }
 
+    /**
+     * If {@code childProject} (the Aggregate's input) references a nested array via {@code ITEM}
+     * AND that reference feeds a GROUP BY key or an aggregate-function argument, injects the
+     * Correlate+Uncollect unnest beneath it (the existing, unchanged logic) — this is a genuine
+     * grain change (the output IS per-child), matching vanilla's requirement that {@code expand} (or
+     * an explicit {@code nested()}/{@code stats ... by} group-key) is needed to see every element.
+     * Returns {@code childProject} unchanged if no such reference exists (the plain-projection
+     * rewrite in {@link #rewriteProject} will apply instead, once {@code visit(LogicalProject)}
+     * reaches it — first-element semantics, matching vanilla's {@code parseArray} degrade behavior).
+     */
+    private static RelNode rewriteAggregateInputProject(LogicalAggregate aggregate, LogicalProject childProject) {
+        RelNode grandchild = childProject.getInput();
+        int arrayCol = firstArrayColReferenced(childProject.getProjects(), grandchild.getRowType());
+        if (arrayCol < 0) {
+            return childProject;
+        }
+        // Only claim this Project if the ITEM-bearing output column(s) are actually consumed by
+        // the Aggregate — as a group key or as an aggregate call's argument. If the ITEM reference
+        // feeds a column the Aggregate never touches (e.g. a passthrough SELECT column alongside an
+        // unrelated aggregate), leave it for the plain-projection (first-element) rewrite.
+        java.util.Set<Integer> itemBearingOutputCols = new java.util.HashSet<>();
+        List<RexNode> projectExprs = childProject.getProjects();
+        for (int i = 0; i < projectExprs.size(); i++) {
+            if (referencesItemOnArray(projectExprs.get(i), arrayCol, grandchild.getRowType())) {
+                itemBearingOutputCols.add(i);
+            }
+        }
+        boolean consumedByAggregate = false;
+        for (int groupKey : aggregate.getGroupSet()) {
+            if (itemBearingOutputCols.contains(groupKey)) {
+                consumedByAggregate = true;
+                break;
+            }
+        }
+        if (!consumedByAggregate) {
+            for (AggregateCall call : aggregate.getAggCallList()) {
+                for (int argIdx : call.getArgList()) {
+                    if (itemBearingOutputCols.contains(argIdx)) {
+                        consumedByAggregate = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if (!consumedByAggregate) {
+            return childProject;
+        }
+        return rewriteProjectViaUnnest(childProject);
+    }
+
+    /** True if {@code expr} contains {@code ITEM($arrayCol,'field')} anywhere in its tree. */
+    private static boolean referencesItemOnArray(RexNode expr, int arrayCol, RelDataType inputRowType) {
+        ItemFinder finder = new ItemFinder(inputRowType);
+        expr.accept(finder);
+        return finder.arrayCol == arrayCol;
+    }
+
     // ---- Project: rewrite ITEM refs in the projected expressions -------------------------------
 
+    /**
+     * Plain-projection path: rewrites {@code ITEM($arrayCol,'field')} to {@code
+     * ITEM(ITEM($arrayCol, 1), 'field')} — index into the array to get its first element (a ROW),
+     * then extract the field from that ROW. Both are plain Calcite {@code ITEM} calls, dispatched at
+     * Substrait-emission time by {@code ArrayElementAdapter} (array-index → {@code array_element},
+     * struct-field → {@code get_field}) — no new operator, no row-count change.
+     *
+     * <p>Matches vanilla OpenSearch's own behavior for a bare dotted nested projection with no
+     * inner_hits/expand request (see {@code OpenSearchExprValueFactory.parseArray}, which degrades
+     * to {@code content.array().next()} — the first element — when {@code supportArrays} is false).
+     */
     private static RelNode rewriteProject(LogicalProject project) {
+        RelNode input = project.getInput();
+        int arrayCol = firstArrayColReferenced(project.getProjects(), input.getRowType());
+        if (arrayCol < 0) {
+            return project;
+        }
+        RelOptCluster cluster = project.getCluster();
+        RexBuilder rexBuilder = cluster.getRexBuilder();
+        RelDataTypeField arrayField = input.getRowType().getFieldList().get(arrayCol);
+        FirstElementRewriteShuttle shuttle = new FirstElementRewriteShuttle(arrayCol, arrayField.getType(), rexBuilder);
+        List<RexNode> newExprs = new ArrayList<>(project.getProjects().size());
+        for (RexNode e : project.getProjects()) {
+            newExprs.add(e.accept(shuttle));
+        }
+        LOGGER.info(
+            "[NESTED-FIRST-ELEMENT] plain projection on array col '{}' (idx {}) rewritten to ITEM(ITEM(arr,1),field) "
+                + "— no unnest, first element only (matches vanilla)",
+            arrayField.getName(),
+            arrayCol
+        );
+        return LogicalProject.create(input, List.of(), newExprs, project.getRowType().getFieldNames());
+    }
+
+    /**
+     * Rewrites {@code ITEM($arrayCol,'field')} references in {@code project}'s expressions to
+     * columns of an injected Correlate+Uncollect (the original, child-grain unnest path). Used when
+     * the Aggregate-input guard determines a genuine grain change is required.
+     */
+    private static RelNode rewriteProjectViaUnnest(LogicalProject project) {
         RelNode input = project.getInput();
         int arrayCol = firstArrayColReferenced(project.getProjects(), input.getRowType());
         if (arrayCol < 0) {
@@ -128,8 +298,62 @@ public final class OpenSearchNestedFieldRewriter {
         return LogicalProject.create(u.correlate, List.of(), newExprs, project.getRowType().getFieldNames());
     }
 
-    // ---- Filter: rewrite ITEM refs in the condition, then restore the parent row type ----------
+    /**
+     * Rewrites {@code ITEM($arrayCol,'field')} to {@code ITEM(ITEM($arrayCol, 1), 'field')} in
+     * place — no relational structure change, just an expression substitution. Both calls use
+     * Calcite's standard {@code SqlStdOperatorTable.ITEM} operator; {@code ArrayElementAdapter}
+     * (already shipped, used by PPL's {@code mvindex}/{@code spath} paths) dispatches the outer
+     * array-index call to {@code array_element} and — per the new struct-input branch added
+     * alongside this change — the inner struct-field call to {@code get_field}.
+     */
+    private static final class FirstElementRewriteShuttle extends RexShuttle {
+        private final int arrayCol;
+        private final RelDataType elementType;
+        private final RexBuilder rexBuilder;
 
+        FirstElementRewriteShuttle(int arrayCol, RelDataType arrayType, RexBuilder rexBuilder) {
+            this.arrayCol = arrayCol;
+            this.elementType = arrayType.getComponentType();
+            this.rexBuilder = rexBuilder;
+        }
+
+        @Override
+        public RexNode visitCall(RexCall call) {
+            if ("ITEM".equals(call.getOperator().getName()) && call.getOperands().size() == 2) {
+                RexNode arrayOperand = call.getOperands().get(0);
+                RexNode fieldNode = call.getOperands().get(1);
+                if (arrayOperand instanceof RexInputRef ref
+                    && ref.getIndex() == arrayCol
+                    && fieldNode instanceof RexLiteral lit
+                    && lit.getTypeName() == SqlTypeName.CHAR) {
+                    RexNode indexLiteral = rexBuilder.makeExactLiteral(java.math.BigDecimal.ONE);
+                    RexNode firstElement = rexBuilder.makeCall(
+                        elementType,
+                        org.apache.calcite.sql.fun.SqlStdOperatorTable.ITEM,
+                        List.of(arrayOperand, indexLiteral)
+                    );
+                    return rexBuilder.makeCall(
+                        call.getType(),
+                        org.apache.calcite.sql.fun.SqlStdOperatorTable.ITEM,
+                        List.of(firstElement, fieldNode)
+                    );
+                }
+            }
+            return super.visitCall(call);
+        }
+    }
+
+    // ---- Filter: rewrite ITEM-based predicates into nested_any_match scalar calls ---------------
+
+    /**
+     * Rewrites a filter containing {@code ITEM($arrayCol,'field') <op> <literal>} into a filter
+     * using {@code NESTED_ANY_MATCH($arrayCol, 'field', '<op>', <literal>)}. This is the "peek
+     * inside the cell" approach: the function iterates the array internally and returns TRUE/FALSE
+     * per parent row — row count never changes.
+     *
+     * <p>Falls back to the old Correlate+Uncollect path for predicates that don't match the
+     * supported shape (e.g. ITEM used in a non-comparison context, or two different arrays).
+     */
     private static RelNode rewriteFilter(LogicalFilter filter) {
         RelNode input = filter.getInput();
         int arrayCol = firstArrayColReferenced(List.of(filter.getCondition()), input.getRowType());
@@ -138,6 +362,16 @@ public final class OpenSearchNestedFieldRewriter {
         }
         RelOptCluster cluster = filter.getCluster();
         RexBuilder rexBuilder = cluster.getRexBuilder();
+
+        // Try the lambda (nested_any_match) rewrite first — it preserves parent grain.
+        RexNode lambdaCondition = tryLambdaRewrite(filter.getCondition(), arrayCol, input.getRowType(), rexBuilder);
+        if (lambdaCondition != null) {
+            LOGGER.info("[NESTED-LAMBDA] filter rewritten to nested_any_match (no unnest, row count preserved)");
+            return LogicalFilter.create(input, lambdaCondition);
+        }
+
+        // Fallback: inject Correlate+Uncollect (the old unnest path).
+        LOGGER.info("[NESTED] filter lambda-rewrite not applicable, falling back to unnest path");
         int originalColCount = input.getRowType().getFieldCount();
         UnnestResult u = injectUnnest(input, arrayCol, cluster, rexBuilder);
         if (u == null) {
@@ -147,10 +381,6 @@ public final class OpenSearchNestedFieldRewriter {
         RexNode newCondition = filter.getCondition().accept(shuttle);
         RelNode newFilter = LogicalFilter.create(u.correlate, newCondition);
 
-        // Restore the parent row type: project only the original columns (drop the appended unnested
-        // struct fields). Original indices are unchanged, so this is a straight 0..originalColCount-1
-        // projection. This yields parent rows (matching the "WHERE on nested returns the parent doc"
-        // semantics). Parent de-duplication is a known follow-up (see class javadoc).
         List<RexNode> passthrough = new ArrayList<>(originalColCount);
         List<String> names = new ArrayList<>(originalColCount);
         List<RelDataTypeField> corrFields = u.correlate.getRowType().getFieldList();
@@ -159,6 +389,227 @@ public final class OpenSearchNestedFieldRewriter {
             names.add(corrFields.get(i).getName());
         }
         return LogicalProject.create(newFilter, List.of(), passthrough, names);
+    }
+
+    /**
+     * Attempts to rewrite the filter condition using {@code NESTED_ANY_MATCH_EXPR}. Splits the
+     * TOP-LEVEL {@code AND} conjuncts (if any) into two groups:
+     * <ul>
+     *   <li>conjuncts that reference our array column — these are combined into ONE joint
+     *       per-element expression tree (a single element must satisfy ALL of them together,
+     *       matching vanilla's semantics), wrapped in one {@code NESTED_ANY_MATCH_EXPR} call</li>
+     *   <li>conjuncts that don't (pure parent predicates, e.g. {@code count > 0}) — passed through
+     *       unchanged and ANDed back in at the row level, since parent predicates are genuinely
+     *       independent per-row and don't need per-element evaluation</li>
+     * </ul>
+     * A non-AND condition (a single comparison, an OR, a NOT, ...) is treated as one conjunct.
+     * Returns null (triggering the Correlate+Uncollect fallback) if any array-referencing conjunct's
+     * tree can't be built — e.g. it touches a DIFFERENT array column, or mixes an array-of-ours
+     * reference with a parent column inside the SAME comparison (ambiguous — which row's value?).
+     */
+    private static RexNode tryLambdaRewrite(RexNode condition, int arrayCol, RelDataType inputRowType, RexBuilder rexBuilder) {
+        List<RexNode> conjuncts = condition.getKind() == SqlKind.AND ? ((RexCall) condition).getOperands() : List.of(condition);
+
+        ExprTreeBuilder builder = new ExprTreeBuilder(arrayCol, inputRowType);
+        List<Map<String, Object>> arrayTrees = new ArrayList<>();
+        List<RexNode> parentConjuncts = new ArrayList<>();
+
+        for (RexNode conjunct : conjuncts) {
+            if (builder.containsItemOnArray(conjunct)) {
+                Map<String, Object> tree = builder.build(conjunct);
+                if (tree == null) {
+                    return null; // unsupported shape somewhere in this conjunct — fall back entirely
+                }
+                arrayTrees.add(tree);
+            } else {
+                parentConjuncts.add(conjunct);
+            }
+        }
+        if (arrayTrees.isEmpty()) {
+            return null; // nothing to rewrite on our array — shouldn't normally happen, fall back
+        }
+
+        Map<String, Object> combinedTree = arrayTrees.size() == 1
+            ? arrayTrees.get(0)
+            : Map.of("op", "AND", "args", arrayTrees);
+
+        String json;
+        try {
+            json = com.fasterxml.jackson.databind.json.JsonMapper.builder().build().writeValueAsString(combinedTree);
+        } catch (Exception e) {
+            LOGGER.warn("[NESTED-LAMBDA] failed to serialize expr tree, falling back to unnest", e);
+            return null;
+        }
+        RexNode arrayRef = rexBuilder.makeInputRef(inputRowType.getFieldList().get(arrayCol).getType(), arrayCol);
+        RexNode exprLit = rexBuilder.makeLiteral(json);
+        RexNode anyMatchCall = rexBuilder.makeCall(
+            rexBuilder.getTypeFactory().createSqlType(SqlTypeName.BOOLEAN),
+            NESTED_ANY_MATCH_EXPR_OP,
+            List.of(arrayRef, exprLit)
+        );
+
+        if (parentConjuncts.isEmpty()) {
+            return anyMatchCall;
+        }
+        List<RexNode> allOperands = new ArrayList<>(parentConjuncts.size() + 1);
+        allOperands.add(anyMatchCall);
+        allOperands.addAll(parentConjuncts);
+        return rexBuilder.makeCall(rexBuilder.getTypeFactory().createSqlType(SqlTypeName.BOOLEAN), org.apache.calcite.sql.fun.SqlStdOperatorTable.AND, allOperands);
+    }
+
+    /**
+     * Walks a Calcite expression tree and builds an equivalent JSON-serializable tree describing the
+     * per-element predicate, for the {@code NESTED_ANY_MATCH_EXPR} wire format. Node shapes:
+     * <ul>
+     *   <li>{@code {"op":"AND"|"OR","args":[...]}} — boolean connective</li>
+     *   <li>{@code {"op":"NOT","args":[...]}} — negation</li>
+     *   <li>{@code {"op":">"|">="|"<"|"<="|"="|"!=","args":[...]}} — comparison (exactly 2 args)</li>
+     *   <li>{@code {"op":"+"|"-"|"*"|"/"|"%","args":[...]}} — arithmetic (exactly 2 args)</li>
+     *   <li>{@code {"field":"fieldName"}} — read a field off the CURRENT array element</li>
+     *   <li>{@code {"lit":value}} — a literal number/string/boolean</li>
+     * </ul>
+     * Top-level entry point is {@link #build}, which returns {@code null} if the condition contains
+     * a reference to a DIFFERENT array column (unsupported — multi-array predicates fall back to
+     * unnest) or an operator this builder doesn't know how to translate.
+     */
+    private static final class ExprTreeBuilder {
+        private final int arrayCol;
+        private final RelDataType inputRowType;
+
+        ExprTreeBuilder(int arrayCol, RelDataType inputRowType) {
+            this.arrayCol = arrayCol;
+            this.inputRowType = inputRowType;
+        }
+
+        /** Returns null if the tree can't be expressed (unsupported operator, or ITEM on the wrong array). */
+        Map<String, Object> build(RexNode node) {
+            // ITEM($arrayCol, 'field') -> {"field": "field"}
+            if (node instanceof RexCall itemCall
+                && "ITEM".equals(itemCall.getOperator().getName())
+                && itemCall.getOperands().size() == 2) {
+                RexNode arrayOperand = itemCall.getOperands().get(0);
+                RexNode fieldNode = itemCall.getOperands().get(1);
+                if (arrayOperand instanceof RexInputRef ref && fieldNode instanceof RexLiteral lit && lit.getTypeName() == SqlTypeName.CHAR) {
+                    if (ref.getIndex() != arrayCol) {
+                        return null; // ITEM on a DIFFERENT array — unsupported, fall back
+                    }
+                    return Map.of("field", lit.getValueAs(String.class));
+                }
+                return null;
+            }
+
+            if (node instanceof RexLiteral lit) {
+                // String/char literals come back from getValueAs(Comparable.class) as Calcite's
+                // internal NlsString (carrying charset/collation) — JSON-serializing that produces
+                // a nested object, not a plain string, which the Rust-side parser can't read as a
+                // string value. getValueAs(String.class) unwraps NlsString to a plain Java String;
+                // for non-string types (numbers, booleans) fall back to the generic Comparable path.
+                Object value;
+                if (lit.getTypeName() == SqlTypeName.CHAR || lit.getTypeName() == SqlTypeName.VARCHAR) {
+                    value = lit.getValueAs(String.class);
+                } else {
+                    value = lit.getValueAs(Comparable.class);
+                }
+                return Map.of("lit", value == null ? "null" : value);
+            }
+
+            if (node instanceof RexCall call) {
+                // A CAST wrapping any of the above is transparent for this tree (the Rust side
+                // compares numerically regardless of source width).
+                if (call.getKind() == SqlKind.CAST) {
+                    return build(call.getOperands().get(0));
+                }
+                String opSymbol = opSymbolFor(call);
+                if (opSymbol == null) {
+                    // Unknown operator. If it references our array at all, we can't safely pass it
+                    // through as a pure-parent predicate (it's ambiguous), so fail closed.
+                    return containsItemOnArray(call) ? null : passthroughAsLiteralRef(call);
+                }
+                List<Object> args = new ArrayList<>(call.getOperands().size());
+                for (RexNode operand : call.getOperands()) {
+                    Map<String, Object> argTree = build(operand);
+                    if (argTree == null) {
+                        return null;
+                    }
+                    args.add(argTree);
+                }
+                Map<String, Object> result = new LinkedHashMap<>();
+                result.put("op", opSymbol);
+                result.put("args", args);
+                return result;
+            }
+
+            // A plain column reference NOT on our array (e.g. a parent-row column mixed into the
+            // expression) — not representable inside a per-element tree; fail closed rather than
+            // silently dropping it.
+            return null;
+        }
+
+        /**
+         * A sub-expression with no ITEM-on-our-array reference at all is a pure parent-row value
+         * (e.g. a literal, or a reference to a different, non-array column) — not evaluable per
+         * array element. Rather than guess, we fail closed: the caller (rewriteFilter) then falls
+         * back to the Correlate+Uncollect path, which resolves parent columns correctly by carrying
+         * them through the join unchanged.
+         */
+        private Map<String, Object> passthroughAsLiteralRef(RexNode node) {
+            return null;
+        }
+
+        private boolean containsItemOnArray(RexNode node) {
+            if (node instanceof RexCall call) {
+                if ("ITEM".equals(call.getOperator().getName()) && call.getOperands().size() == 2) {
+                    RexNode ref = call.getOperands().get(0);
+                    if (ref instanceof RexInputRef r && r.getIndex() == arrayCol) {
+                        return true;
+                    }
+                }
+                for (RexNode op : call.getOperands()) {
+                    if (containsItemOnArray(op)) return true;
+                }
+            }
+            return false;
+        }
+
+        /**
+         * Maps a RexCall to its JSON-tree operator symbol. Most operators are recognized by
+         * Calcite's own {@code SqlKind} (Calcite's built-in comparison/arithmetic operators).
+         * PPL's own custom operators (registered as {@link org.apache.calcite.sql.SqlFunction}
+         * UDFs, e.g. {@code PPLBuiltinOperators.MOD} — {@code new ModFunction().toUDF("MOD")} in
+         * the sql-plugin) carry {@code SqlKind.OTHER_FUNCTION} regardless of what they compute, so
+         * for that catch-all kind we fall back to matching the operator's NAME instead — the same
+         * by-name pattern already used for {@code ITEM} elsewhere in this class.
+         */
+        private static String opSymbolFor(RexCall call) {
+            SqlKind kind = call.getKind();
+            String byKind = switch (kind) {
+                case AND -> "AND";
+                case OR -> "OR";
+                case NOT -> "NOT";
+                case GREATER_THAN -> ">";
+                case GREATER_THAN_OR_EQUAL -> ">=";
+                case LESS_THAN -> "<";
+                case LESS_THAN_OR_EQUAL -> "<=";
+                case EQUALS -> "=";
+                case NOT_EQUALS -> "!=";
+                case PLUS -> "+";
+                case MINUS -> "-";
+                case TIMES -> "*";
+                case DIVIDE -> "/";
+                case MOD -> "%";
+                default -> null;
+            };
+            if (byKind != null) {
+                return byKind;
+            }
+            if (kind == SqlKind.OTHER_FUNCTION) {
+                return switch (call.getOperator().getName().toUpperCase(java.util.Locale.ROOT)) {
+                    case "MOD", "MODULUS", "MODULUSFUNCTION" -> "%";
+                    default -> null;
+                };
+            }
+            return null;
+        }
     }
 
     // ---- Shared: build Correlate(input, Uncollect(array)) appending the struct fields ----------

@@ -48,6 +48,8 @@ public enum ScalarFunction {
     EARLIEST(Category.COMPARISON, SqlKind.OTHER_FUNCTION),
     LATEST(Category.COMPARISON, SqlKind.OTHER_FUNCTION),
     CIDRMATCH(Category.COMPARISON, SqlKind.OTHER_FUNCTION),
+    NESTED_ANY_MATCH(Category.COMPARISON, SqlKind.OTHER_FUNCTION),
+    NESTED_ANY_MATCH_EXPR(Category.COMPARISON, SqlKind.OTHER_FUNCTION),
 
     // ── Logical connectives ─────────────────────────────────────────
     AND(Category.SCALAR, SqlKind.AND),
