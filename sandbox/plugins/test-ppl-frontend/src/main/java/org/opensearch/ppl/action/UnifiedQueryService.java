@@ -121,11 +121,15 @@ public class UnifiedQueryService {
             logger.info("[UnifiedQueryService] Context built, planning PPL: {}", pplText);
             UnifiedQueryPlanner planner = new UnifiedQueryPlanner(context);
 
-            // [NESTED] Plan the query. If the upstream PPL validator rejects a dotted nested
-            // predicate (e.g. `where comments.score > 4`) with "Unsupported conversion for
-            // Relational Data type: ROW", auto-translate to expand form and retry. This bridges
-            // the gap until the upstream validator is relaxed to emit ITEM() for predicates the
-            // same way it already does for projections.
+            // [NESTED] Nested-field queries are planned normally: PPL `expand <array>` lowers to a
+            // Calcite Correlate+Uncollect that OpenSearchNestedFieldRewriter marks and isthmus emits as
+            // an ExtensionSingleRel (see DataFusionFragmentConvertor). No special-casing here — the
+            // generic path handles filter/aggregate/group/sort/projection uniformly.
+            //
+            // Safety net: if the upstream PPL validator still rejects a dotted nested predicate (e.g.
+            // `where comments.score > 4`) with "Unsupported conversion for Relational Data type: ROW"
+            // (the sql-plugin's ITEM-on-ROW fix not yet in the resolved plugin version), auto-translate
+            // to expand form and retry rather than failing the query outright.
             RelNode logicalPlan;
             try {
                 logicalPlan = planner.plan(pplText);

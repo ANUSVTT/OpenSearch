@@ -147,9 +147,10 @@ public final class ArrowSchemaBuilder {
         if (structChildren.isEmpty()) {
             return null;
         }
-        // Sort struct children alphabetically so the schema order is deterministic and matches
-        // what OpenSearchSchemaBuilder produces on the query side.
-        structChildren.sort((a, b) -> a.getName().compareTo(b.getName()));
+        // Struct fields are matched BY POSITION downstream (Substrait / DataFusion). Order struct
+        // children deterministically by field name so the write schema matches the read schema
+        // built by OpenSearchSchemaBuilder.buildNestedStructType (which sorts via TreeMap).
+        structChildren.sort(java.util.Comparator.comparing(Field::getName));
         Field element = new Field("element", FieldType.nullable(ArrowType.Struct.INSTANCE), structChildren);
         return new Field(path, FieldType.nullable(ArrowType.List.INSTANCE), List.of(element));
     }

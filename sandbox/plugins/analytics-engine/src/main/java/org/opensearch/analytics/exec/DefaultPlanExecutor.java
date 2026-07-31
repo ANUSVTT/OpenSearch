@@ -262,7 +262,6 @@ public class DefaultPlanExecutor extends HandledTransportAction<AnalyticsQueryRe
         );
         plannerContext.setPlannerSettings(plannerSettings);
         RelNode plan = PlannerImpl.createPlan(logicalFragment, plannerContext);
-        //step 4
         // [NESTED-POC] Trace the executor's view of the optimized plan + DAG. Grep: NESTED-POC.
         logger.info("[NESTED-POC] ====== After PlannerImpl.createPlan() ======");
         logger.info("[NESTED-POC] Final optimized plan:\n{}", RelOptUtil.toString(plan));
@@ -271,8 +270,6 @@ public class DefaultPlanExecutor extends HandledTransportAction<AnalyticsQueryRe
 
         //step 5
         QueryDAG dag = DAGBuilder.build(plan, capabilityRegistry, clusterService, indexNameExpressionResolver);
-        //step 6
-
         logger.info("[NESTED-POC] ====== QueryDAG built ======\n{}", dag);
         PlanForker.forkAll(dag, capabilityRegistry);
         BackendPlanAdapter.adaptAll(dag, capabilityRegistry);
