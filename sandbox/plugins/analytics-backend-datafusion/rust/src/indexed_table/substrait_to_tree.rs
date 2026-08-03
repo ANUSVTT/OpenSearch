@@ -104,8 +104,8 @@ pub struct ExtractionResult {
 pub fn extract_filter_expr(plan: &LogicalPlan) -> Option<Expr> {
     match plan {
         LogicalPlan::Filter(filter) => {
-            if has_aggregate_or_window_below(&filter.input) || has_unnest_below(&filter.input) {
-                // Skip this filter (references post-agg/post-unnest columns that don't exist
+            if has_aggregate_or_window_below(&filter.input) {
+                // Skip this filter (references post-agg columns that don't exist
                 // in the base scan schema) but keep searching deeper for a pushable parent filter.
                 extract_filter_expr(&filter.input)
             } else if has_unnest_below(&filter.input) {
