@@ -123,18 +123,24 @@ public class PlannerImpl {
         // [NESTED-POC] Stage-by-stage plan dump so the nested/N1 transform is visible end to end.
         // Grep: NESTED-POC. Mirrors the customer-query -> N1-rewrite pipeline's logging style.
         LOGGER.info("[NESTED-POC] Input RelNode row type: {}", rawRelNode.getRowType());
+        LOGGER.info("[TRACE-STEP] runAllOptimizations: START. rawRelNode=\n{}", RelOptUtil.toString(rawRelNode));
 
         RuleProfilingListener listener = context.isProfilingEnabled() ? new RuleProfilingListener() : null;
 
         RelNode modifiedRelNode = rawRelNode;
         modifiedRelNode = removeSubQueries(modifiedRelNode, listener);
         logStage("After removeSubQueries", modifiedRelNode);
+        LOGGER.info("[TRACE-STEP] after removeSubQueries:\n{}", RelOptUtil.toString(modifiedRelNode));
         modifiedRelNode = extractLiteralAgg(modifiedRelNode, listener);
+        LOGGER.info("[TRACE-STEP] after extractLiteralAgg:\n{}", RelOptUtil.toString(modifiedRelNode));
         modifiedRelNode = reduceExpressions(modifiedRelNode, listener);
+        LOGGER.info("[TRACE-STEP] after reduceExpressions:\n{}", RelOptUtil.toString(modifiedRelNode));
         modifiedRelNode = pushdownRules(modifiedRelNode, listener);
         logStage("After pushdownRules", modifiedRelNode);
+        LOGGER.info("[TRACE-STEP] after pushdownRules:\n{}", RelOptUtil.toString(modifiedRelNode));
         modifiedRelNode = decomposeAggregates(modifiedRelNode, listener);
         logStage("After decomposeAggregates", modifiedRelNode);
+        LOGGER.info("[TRACE-STEP] after decomposeAggregates:\n{}", RelOptUtil.toString(modifiedRelNode));
         // [NESTED] Rewrite ITEM-on-ARRAY(ROW) nested refs into a real Correlate+Uncollect (UNNEST)
         // subtree BEFORE marking, so the marking rules only ever see plain column refs to the flattened
         // struct fields (never the unsupported ITEM function). Gated by the generic-rewrite kill-switch
@@ -145,13 +151,21 @@ public class PlannerImpl {
             if (modifiedRelNode != beforeNested) {
                 logStage("After nested UNNEST rewrite", modifiedRelNode);
             }
+            LOGGER.info(
+                "[TRACE-STEP] after nested-field rewrite (changed={}):\n{}",
+                modifiedRelNode != beforeNested,
+                RelOptUtil.toString(modifiedRelNode)
+            );
         }
         LOGGER.info("[NESTED-POC] Before mark() — RelNode entering mark():");
         logStage("RelNode entering mark", modifiedRelNode);
+        LOGGER.info("[TRACE-STEP] BEFORE mark() — input:\n{}", RelOptUtil.toString(modifiedRelNode));
         modifiedRelNode = mark(modifiedRelNode, context, listener);
         LOGGER.debug("After marking:\n{}", RelOptUtil.toString(modifiedRelNode));
         logStage("After marking", modifiedRelNode);
+        LOGGER.info("[TRACE-STEP] AFTER mark() — output:\n{}", RelOptUtil.toString(modifiedRelNode));
         modifiedRelNode = splitAggLiteralArgProject(modifiedRelNode, listener);
+        LOGGER.info("[TRACE-STEP] after splitAggLiteralArgProject:\n{}", RelOptUtil.toString(modifiedRelNode));
         // TODO(combine-delegated-predicates): a post-marking HEP rule should fuse same-backend
         // AND-sibling AnnotatedPredicates into one combined predicate per group, collapsing N
         // FFM round-trips per RG into one. Blocked on two open design points:
@@ -161,25 +175,39 @@ public class PlannerImpl {
         // a single BooleanQuery / Weight without polluting ScalarFunction with AND.
         // Revisit once those are designed. The rule would also strip performance peers from
         // AnnotatedPredicates under OR/NOT (Lucene call buys nothing in those positions).
+        LOGGER.info("[TRACE-STEP] BEFORE cbo() — input:\n{}", RelOptUtil.toString(modifiedRelNode));
         modifiedRelNode = cbo(modifiedRelNode, rawRelNode, context, listener);
         LOGGER.debug("After CBO:\n{}", RelOptUtil.toString(modifiedRelNode));
         logStage("After CBO", modifiedRelNode);
         LOGGER.info("[NESTED-POC] After CBO row type: {}", modifiedRelNode.getRowType());
+        LOGGER.info("[TRACE-STEP] AFTER cbo() — output:\n{}", RelOptUtil.toString(modifiedRelNode));
+        LOGGER.info("[TRACE-STEP] BEFORE OpenSearchLateMaterializationRewriter.rewrite() — input:\n{}", RelOptUtil.toString(modifiedRelNode));
         Optional<RelNode> lateMat = OpenSearchLateMaterializationRewriter.rewrite(modifiedRelNode);
         if (lateMat.isPresent()) {
             modifiedRelNode = lateMat.get();
             LOGGER.debug("After late-materialization:\n{}", RelOptUtil.toString(modifiedRelNode));
         }
+        LOGGER.info(
+            "[TRACE-STEP] AFTER OpenSearchLateMaterializationRewriter.rewrite() — fired={}, output:\n{}",
+            lateMat.isPresent(),
+            RelOptUtil.toString(modifiedRelNode)
+        );
         Optional<RelNode> topK = OpenSearchTopKRewriter.rewrite(modifiedRelNode, context);
         if (topK.isPresent()) {
             modifiedRelNode = topK.get();
             LOGGER.debug("After TopK rewrite:\n{}", RelOptUtil.toString(modifiedRelNode));
         }
+        LOGGER.info("[TRACE-STEP] AFTER OpenSearchTopKRewriter.rewrite() — fired={}", topK.isPresent());
         Optional<RelNode> sortPushdown = OpenSearchSortPushdownRewriter.rewrite(modifiedRelNode);
         if (sortPushdown.isPresent()) {
             modifiedRelNode = sortPushdown.get();
             LOGGER.debug("After sort pushdown:\n{}", RelOptUtil.toString(modifiedRelNode));
         }
+        LOGGER.info(
+            "[TRACE-STEP] AFTER OpenSearchSortPushdownRewriter.rewrite() — fired={}, FINAL modifiedRelNode:\n{}",
+            sortPushdown.isPresent(),
+            RelOptUtil.toString(modifiedRelNode)
+        );
 
         if (listener != null) {
             RuleProfilingListener.PlannerProfile profile = listener.snapshot();

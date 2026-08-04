@@ -63,7 +63,9 @@ public class BackendPlanAdapter {
      * Adapt all plan alternatives in the DAG using each alternative's driving backend's adapters.
      */
     public static void adaptAll(QueryDAG dag, CapabilityRegistry registry) {
+        LOGGER.info("[TRACE-STEP] BackendPlanAdapter.adaptAll: START");
         adaptStage(dag.rootStage(), registry);
+        LOGGER.info("[TRACE-STEP] BackendPlanAdapter.adaptAll: DONE");
     }
 
     private static void adaptStage(Stage stage, CapabilityRegistry registry) {
@@ -75,9 +77,24 @@ public class BackendPlanAdapter {
             var capabilityProvider = registry.getBackend(plan.backendId()).getCapabilityProvider();
             Adapters adapters = new Adapters(capabilityProvider.scalarFunctionAdapters(), capabilityProvider.windowFunctionAdapters());
             LOGGER.debug("Before adaptation [{}]:\n{}", plan.backendId(), RelOptUtil.toString(plan.resolvedFragment()));
+            LOGGER.info(
+                "[TRACE-STEP] adaptStage(stageId={}): backend=[{}] declares {} scalarFunctionAdapter(s), {} windowFunctionAdapter(s). BEFORE adaptNode():\n{}",
+                stage.getStageId(),
+                plan.backendId(),
+                adapters.scalar().size(),
+                adapters.window().size(),
+                RelOptUtil.toString(plan.resolvedFragment())
+            );
             RelNode fragment = adaptNode(plan.resolvedFragment(), adapters);
             LOGGER.debug("After adaptation [{}]:\n{}", plan.backendId(), RelOptUtil.toString(fragment));
-            if (fragment != plan.resolvedFragment()) {
+            boolean changed = fragment != plan.resolvedFragment();
+            LOGGER.info(
+                "[TRACE-STEP] adaptStage(stageId={}): AFTER adaptNode() — changed={}. output:\n{}",
+                stage.getStageId(),
+                changed,
+                RelOptUtil.toString(fragment)
+            );
+            if (changed) {
                 adapted.add(new StagePlan(fragment, plan.backendId()));
             } else {
                 adapted.add(plan);

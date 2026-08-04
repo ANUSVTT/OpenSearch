@@ -411,22 +411,45 @@ public final class OpenSearchNestedFieldRewriter {
         List<RexNode> conjuncts = condition.getKind() == SqlKind.AND ? ((RexCall) condition).getOperands() : List.of(condition);
 
         ExprTreeBuilder builder = new ExprTreeBuilder(arrayCol, inputRowType);
-        List<Map<String, Object>> arrayTrees = new ArrayList<>();
+        List<RexNode> arrayConjuncts = new ArrayList<>();
         List<RexNode> parentConjuncts = new ArrayList<>();
-
         for (RexNode conjunct : conjuncts) {
             if (builder.containsItemOnArray(conjunct)) {
-                Map<String, Object> tree = builder.build(conjunct);
-                if (tree == null) {
-                    return null; // unsupported shape somewhere in this conjunct — fall back entirely
-                }
-                arrayTrees.add(tree);
+                arrayConjuncts.add(conjunct);
             } else {
                 parentConjuncts.add(conjunct);
             }
         }
-        if (arrayTrees.isEmpty()) {
+        if (arrayConjuncts.isEmpty()) {
             return null; // nothing to rewrite on our array — shouldn't normally happen, fall back
+        }
+
+        // Fast path: a single, standalone keyword-equality conjunct on our array (e.g.
+        // `comments.author = "alice"`, alone or ANDed only with parent-only conjuncts) becomes
+        // NESTED_ANY_MATCH — the flat (field, op, value) predecessor of NESTED_ANY_MATCH_EXPR.
+        // Unlike NESTED_ANY_MATCH_EXPR (DataFusion-only), NESTED_ANY_MATCH is registered as a
+        // dual-viable [lucene, datafusion] filter capability (see LuceneAnalyticsBackendPlugin),
+        // so it can be performance-delegated to Lucene's native nested block-join query exactly
+        // like a flat EQUALS predicate is today — giving nested equality the same
+        // Lucene-delegation behavior as flat fields. Only fires for a SINGLE array conjunct: a
+        // compound joint condition (e.g. `author='alice' AND score>10`) must stay on the generic
+        // path below, since a partial match on just the equality clause would be wrong (see class
+        // javadoc on joint semantics).
+        if (arrayConjuncts.size() == 1) {
+            RexNode directMatch = tryDirectEqualityRewrite(arrayConjuncts.get(0), arrayCol, inputRowType, rexBuilder);
+            if (directMatch != null) {
+                LOGGER.info("[NESTED-LAMBDA] filter rewritten to nested_any_match (flat, Lucene-delegable)");
+                return combineWithParentConjuncts(directMatch, parentConjuncts, rexBuilder);
+            }
+        }
+
+        List<Map<String, Object>> arrayTrees = new ArrayList<>();
+        for (RexNode conjunct : arrayConjuncts) {
+            Map<String, Object> tree = builder.build(conjunct);
+            if (tree == null) {
+                return null; // unsupported shape somewhere in this conjunct — fall back entirely
+            }
+            arrayTrees.add(tree);
         }
 
         Map<String, Object> combinedTree = arrayTrees.size() == 1
@@ -448,11 +471,86 @@ public final class OpenSearchNestedFieldRewriter {
             List.of(arrayRef, exprLit)
         );
 
+        return combineWithParentConjuncts(anyMatchCall, parentConjuncts, rexBuilder);
+    }
+
+    /**
+     * Fast-path check: if {@code conjunct} is exactly {@code ITEM($arrayCol,'field') = 'literal'}
+     * (either operand order) with a STRING literal value, emits {@code NESTED_ANY_MATCH(arrayCol,
+     * 'field', 'EQUALS', 'literal')} — the flat 4-arg predecessor of {@code NESTED_ANY_MATCH_EXPR}
+     * (see {@link #NESTED_ANY_MATCH_OP}'s javadoc). This shape is registered as a dual-viable
+     * [lucene, datafusion] filter capability, enabling performance-delegation to Lucene's native
+     * nested block-join query, unlike the always-DataFusion-only {@code NESTED_ANY_MATCH_EXPR}.
+     *
+     * <p>Deliberately restricted to a STRING-literal comparison value: only keyword-typed nested
+     * leaves make sense as a Lucene term lookup in this composite (parquet+lucene) setup, and no
+     * leaf-level field-type info is available at this point — nested leaf fields have no entry in
+     * {@code FieldStorageResolver} (it explicitly skips {@code "nested"}-typed fields). Requiring a
+     * string literal is the same conservative heuristic this class already uses elsewhere ({@code
+     * ItemFinder}/{@code ExprTreeBuilder}) to infer "this looks like a keyword comparison" without
+     * real type resolution. A numeric/boolean-literal comparison falls through to the generic
+     * {@code NESTED_ANY_MATCH_EXPR} path unchanged, staying DataFusion-only rather than risk
+     * mis-registering a Lucene capability for a field Lucene doesn't actually index in this format.
+     *
+     * <p>Only {@code EQUALS} is handled (not {@code NOT_EQUALS}) — a nested "field != value"
+     * existence check has no Lucene query primitive as simple as a single {@code TermQuery} and
+     * isn't needed for the common case this fast path targets. Returns {@code null} for anything
+     * else (including {@code NOT_EQUALS}, non-comparison kinds, or a non-string literal), which
+     * triggers the generic path in the caller.
+     */
+    private static RexNode tryDirectEqualityRewrite(RexNode conjunct, int arrayCol, RelDataType inputRowType, RexBuilder rexBuilder) {
+        if (conjunct.getKind() != SqlKind.EQUALS || !(conjunct instanceof RexCall call) || call.getOperands().size() != 2) {
+            return null;
+        }
+        RexNode left = call.getOperands().get(0);
+        RexNode right = call.getOperands().get(1);
+
+        RexCall itemCall;
+        RexLiteral valueLit;
+        if (isItemOnArray(left, arrayCol) && right instanceof RexLiteral lit) {
+            itemCall = (RexCall) left;
+            valueLit = lit;
+        } else if (isItemOnArray(right, arrayCol) && left instanceof RexLiteral lit) {
+            itemCall = (RexCall) right;
+            valueLit = lit;
+        } else {
+            return null;
+        }
+        if (valueLit.getTypeName() != SqlTypeName.CHAR && valueLit.getTypeName() != SqlTypeName.VARCHAR) {
+            return null; // not a string comparison — leave for the generic path
+        }
+        RexNode fieldNameNode = itemCall.getOperands().get(1);
+        if (!(fieldNameNode instanceof RexLiteral fieldLit) || fieldLit.getTypeName() != SqlTypeName.CHAR) {
+            return null;
+        }
+        String fieldName = fieldLit.getValueAs(String.class);
+        String value = valueLit.getValueAs(String.class);
+
+        RexNode arrayRef = rexBuilder.makeInputRef(inputRowType.getFieldList().get(arrayCol).getType(), arrayCol);
+        return rexBuilder.makeCall(
+            rexBuilder.getTypeFactory().createSqlType(SqlTypeName.BOOLEAN),
+            NESTED_ANY_MATCH_OP,
+            List.of(arrayRef, rexBuilder.makeLiteral(fieldName), rexBuilder.makeLiteral("EQUALS"), rexBuilder.makeLiteral(value))
+        );
+    }
+
+    /** True if {@code node} is exactly {@code ITEM($arrayCol, <anything>)}. */
+    private static boolean isItemOnArray(RexNode node, int arrayCol) {
+        if (!(node instanceof RexCall call) || !"ITEM".equals(call.getOperator().getName()) || call.getOperands().size() != 2) {
+            return false;
+        }
+        return call.getOperands().get(0) instanceof RexInputRef ref && ref.getIndex() == arrayCol;
+    }
+
+    /** ANDs {@code arrayCall} together with any parent-only conjuncts (passed through unchanged,
+     *  since they're independent per-row and don't need per-element evaluation); returns {@code
+     *  arrayCall} directly when there are none. */
+    private static RexNode combineWithParentConjuncts(RexNode arrayCall, List<RexNode> parentConjuncts, RexBuilder rexBuilder) {
         if (parentConjuncts.isEmpty()) {
-            return anyMatchCall;
+            return arrayCall;
         }
         List<RexNode> allOperands = new ArrayList<>(parentConjuncts.size() + 1);
-        allOperands.add(anyMatchCall);
+        allOperands.add(arrayCall);
         allOperands.addAll(parentConjuncts);
         return rexBuilder.makeCall(rexBuilder.getTypeFactory().createSqlType(SqlTypeName.BOOLEAN), org.apache.calcite.sql.fun.SqlStdOperatorTable.AND, allOperands);
     }

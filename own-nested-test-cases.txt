@@ -1,0 +1,394 @@
+1|existence|teams|source=teams | where members.hours > 20 | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Discrim1"], ["Eagles"], ["Falcons"], ["Hawks"], ["Owls"], ["SortHigh"], ["Wolves"]]}
+2|existence|teams|source=teams | where members.hours < 20 | fields team|{"columns": ["team"], "rows": [["NegTest"], ["SortLow"]]}
+3|existence|teams|source=teams | where members.hours >= 20 | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Discrim1"], ["Eagles"], ["Falcons"], ["Hawks"], ["Owls"], ["SortHigh"], ["Wolves"]]}
+4|existence|teams|source=teams | where members.hours <= 20 | fields team|{"columns": ["team"], "rows": [["Eagles"], ["NegTest"], ["SortLow"]]}
+5|existence|teams|source=teams | where members.hours = 20 | fields team|{"columns": ["team"], "rows": [["Eagles"]]}
+6|existence|teams|source=teams | where members.hours != 20 | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Discrim1"], ["Eagles"], ["Falcons"], ["Hawks"], ["NegTest"], ["Owls"], ["SortHigh"], ["SortLow"], ["Wolves"]]}
+7|existence|teams|source=teams | where members.hours > 30 | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Discrim1"], ["Eagles"], ["Falcons"], ["Hawks"], ["Owls"], ["SortHigh"], ["Wolves"]]}
+8|existence|teams|source=teams | where members.hours < 30 | fields team|{"columns": ["team"], "rows": [["Eagles"], ["NegTest"], ["SortLow"]]}
+9|existence|teams|source=teams | where members.hours >= 30 | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Discrim1"], ["Eagles"], ["Falcons"], ["Hawks"], ["Owls"], ["SortHigh"], ["Wolves"]]}
+10|existence|teams|source=teams | where members.hours <= 30 | fields team|{"columns": ["team"], "rows": [["Discrim1"], ["Eagles"], ["NegTest"], ["SortLow"]]}
+11|existence|teams|source=teams | where members.hours = 30 | fields team|{"columns": ["team"], "rows": [["Discrim1"], ["Eagles"]]}
+12|existence|teams|source=teams | where members.hours != 30 | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Discrim1"], ["Eagles"], ["Falcons"], ["Hawks"], ["NegTest"], ["Owls"], ["SortHigh"], ["SortLow"], ["Wolves"]]}
+13|existence|teams|source=teams | where members.hours > 40 | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Discrim1"], ["Eagles"], ["Hawks"], ["Owls"], ["SortHigh"], ["Wolves"]]}
+14|existence|teams|source=teams | where members.hours < 40 | fields team|{"columns": ["team"], "rows": [["Discrim1"], ["Eagles"], ["Falcons"], ["NegTest"], ["Owls"], ["SortLow"]]}
+15|existence|teams|source=teams | where members.hours >= 40 | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Discrim1"], ["Eagles"], ["Falcons"], ["Hawks"], ["Owls"], ["SortHigh"], ["Wolves"]]}
+16|existence|teams|source=teams | where members.hours <= 40 | fields team|{"columns": ["team"], "rows": [["Discrim1"], ["Eagles"], ["Falcons"], ["NegTest"], ["Owls"], ["SortLow"]]}
+17|existence|teams|source=teams | where members.hours = 40 | fields team|{"columns": ["team"], "rows": [["Falcons"]]}
+18|existence|teams|source=teams | where members.hours != 40 | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Discrim1"], ["Eagles"], ["Falcons"], ["Hawks"], ["NegTest"], ["Owls"], ["SortHigh"], ["SortLow"], ["Wolves"]]}
+19|existence|teams|source=teams | where members.rating > 3 | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Discrim1"], ["Eagles"], ["Falcons"], ["Hawks"], ["Owls"], ["Wolves"]]}
+20|existence|teams|source=teams | where members.rating < 3 | fields team|{"columns": ["team"], "rows": [["NegTest"], ["SortHigh"], ["SortLow"]]}
+21|existence|teams|source=teams | where members.rating >= 3 | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Discrim1"], ["Eagles"], ["Falcons"], ["Hawks"], ["NegTest"], ["Owls"], ["Wolves"]]}
+22|existence|teams|source=teams | where members.rating <= 3 | fields team|{"columns": ["team"], "rows": [["NegTest"], ["SortHigh"], ["SortLow"]]}
+23|existence|teams|source=teams | where members.rating = 3 | fields team|{"columns": ["team"], "rows": [["NegTest"]]}
+24|existence|teams|source=teams | where members.rating != 3 | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Discrim1"], ["Eagles"], ["Falcons"], ["Hawks"], ["NegTest"], ["Owls"], ["SortHigh"], ["SortLow"], ["Wolves"]]}
+25|existence|teams|source=teams | where members.rating > 5 | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Discrim1"], ["Eagles"], ["Falcons"], ["Owls"], ["Wolves"]]}
+26|existence|teams|source=teams | where members.rating < 5 | fields team|{"columns": ["team"], "rows": [["Hawks"], ["NegTest"], ["SortHigh"], ["SortLow"]]}
+27|existence|teams|source=teams | where members.rating >= 5 | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Discrim1"], ["Eagles"], ["Falcons"], ["Owls"], ["Wolves"]]}
+28|existence|teams|source=teams | where members.rating <= 5 | fields team|{"columns": ["team"], "rows": [["Discrim1"], ["Eagles"], ["Hawks"], ["NegTest"], ["SortHigh"], ["SortLow"]]}
+29|existence|teams|source=teams | where members.rating = 5 | fields team|{"columns": ["team"], "rows": [["Discrim1"], ["Eagles"]]}
+30|existence|teams|source=teams | where members.rating != 5 | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Discrim1"], ["Eagles"], ["Falcons"], ["Hawks"], ["NegTest"], ["Owls"], ["SortHigh"], ["SortLow"], ["Wolves"]]}
+31|existence|teams|source=teams | where members.rating > 8 | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Discrim1"], ["Eagles"], ["Falcons"]]}
+32|existence|teams|source=teams | where members.rating < 8 | fields team|{"columns": ["team"], "rows": [["Discrim1"], ["Eagles"], ["Falcons"], ["Hawks"], ["NegTest"], ["SortHigh"], ["SortLow"]]}
+33|existence|teams|source=teams | where members.rating >= 8 | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Discrim1"], ["Eagles"], ["Falcons"], ["Owls"], ["Wolves"]]}
+34|existence|teams|source=teams | where members.rating <= 8 | fields team|{"columns": ["team"], "rows": [["Discrim1"], ["Eagles"], ["Falcons"], ["Hawks"], ["NegTest"], ["Owls"], ["SortHigh"], ["SortLow"], ["Wolves"]]}
+35|existence|teams|source=teams | where members.rating = 8 | fields team|{"columns": ["team"], "rows": [["Owls"], ["Wolves"]]}
+36|existence|teams|source=teams | where members.rating != 8 | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Discrim1"], ["Eagles"], ["Falcons"], ["Hawks"], ["NegTest"], ["SortHigh"], ["SortLow"]]}
+37|existence|orders|source=orders | where items.qty > 2 | fields order|{"columns": ["order"], "rows": [["O2"], ["O3"], ["O4"], ["O6"], ["O7"]]}
+38|existence|orders|source=orders | where items.qty < 2 | fields order|{"columns": ["order"], "rows": [["O1"], ["O3"], ["O5"]]}
+39|existence|orders|source=orders | where items.qty >= 2 | fields order|{"columns": ["order"], "rows": [["O1"], ["O2"], ["O3"], ["O4"], ["O5"], ["O6"], ["O7"]]}
+40|existence|orders|source=orders | where items.qty <= 2 | fields order|{"columns": ["order"], "rows": [["O1"], ["O3"], ["O5"], ["O6"]]}
+41|existence|orders|source=orders | where items.qty = 2 | fields order|{"columns": ["order"], "rows": [["O1"], ["O5"], ["O6"]]}
+42|existence|orders|source=orders | where items.qty != 2 | fields order|{"columns": ["order"], "rows": [["O1"], ["O2"], ["O3"], ["O4"], ["O5"], ["O6"], ["O7"]]}
+43|existence|orders|source=orders | where items.qty > 5 | fields order|{"columns": ["order"], "rows": [["O4"], ["O6"]]}
+44|existence|orders|source=orders | where items.qty < 5 | fields order|{"columns": ["order"], "rows": [["O1"], ["O2"], ["O3"], ["O5"], ["O6"], ["O7"]]}
+45|existence|orders|source=orders | where items.qty >= 5 | fields order|{"columns": ["order"], "rows": [["O3"], ["O4"], ["O6"], ["O7"]]}
+46|existence|orders|source=orders | where items.qty <= 5 | fields order|{"columns": ["order"], "rows": [["O1"], ["O2"], ["O3"], ["O5"], ["O6"], ["O7"]]}
+47|existence|orders|source=orders | where items.qty = 5 | fields order|{"columns": ["order"], "rows": [["O3"], ["O7"]]}
+48|existence|orders|source=orders | where items.qty != 5 | fields order|{"columns": ["order"], "rows": [["O1"], ["O2"], ["O3"], ["O4"], ["O5"], ["O6"], ["O7"]]}
+49|existence|orders|source=orders | where items.qty > 10 | fields order|{"columns": ["order"], "rows": [["O6"]]}
+50|existence|orders|source=orders | where items.qty < 10 | fields order|{"columns": ["order"], "rows": [["O1"], ["O2"], ["O3"], ["O5"], ["O6"], ["O7"]]}
+51|existence|orders|source=orders | where items.qty >= 10 | fields order|{"columns": ["order"], "rows": [["O4"], ["O6"]]}
+52|existence|orders|source=orders | where items.qty <= 10 | fields order|{"columns": ["order"], "rows": [["O1"], ["O2"], ["O3"], ["O4"], ["O5"], ["O6"], ["O7"]]}
+53|existence|orders|source=orders | where items.qty = 10 | fields order|{"columns": ["order"], "rows": [["O4"]]}
+54|existence|orders|source=orders | where items.qty != 10 | fields order|{"columns": ["order"], "rows": [["O1"], ["O2"], ["O3"], ["O5"], ["O6"], ["O7"]]}
+55|existence|orders|source=orders | where items.price > 20 | fields order|{"columns": ["order"], "rows": [["O1"], ["O2"], ["O3"], ["O5"], ["O6"]]}
+56|existence|orders|source=orders | where items.price < 20 | fields order|{"columns": ["order"], "rows": [["O4"], ["O6"], ["O7"]]}
+57|existence|orders|source=orders | where items.price >= 20 | fields order|{"columns": ["order"], "rows": [["O1"], ["O2"], ["O3"], ["O5"], ["O6"]]}
+58|existence|orders|source=orders | where items.price <= 20 | fields order|{"columns": ["order"], "rows": [["O4"], ["O6"], ["O7"]]}
+59|existence|orders|source=orders | where items.price = 20 | fields order|{"columns": ["order"], "rows": []}
+60|existence|orders|source=orders | where items.price != 20 | fields order|{"columns": ["order"], "rows": [["O1"], ["O2"], ["O3"], ["O4"], ["O5"], ["O6"], ["O7"]]}
+61|existence|orders|source=orders | where items.price > 50 | fields order|{"columns": ["order"], "rows": [["O1"], ["O3"], ["O5"]]}
+62|existence|orders|source=orders | where items.price < 50 | fields order|{"columns": ["order"], "rows": [["O4"], ["O6"], ["O7"]]}
+63|existence|orders|source=orders | where items.price >= 50 | fields order|{"columns": ["order"], "rows": [["O1"], ["O2"], ["O3"], ["O5"]]}
+64|existence|orders|source=orders | where items.price <= 50 | fields order|{"columns": ["order"], "rows": [["O1"], ["O2"], ["O4"], ["O5"], ["O6"], ["O7"]]}
+65|existence|orders|source=orders | where items.price = 50 | fields order|{"columns": ["order"], "rows": [["O1"], ["O2"], ["O5"]]}
+66|existence|orders|source=orders | where items.price != 50 | fields order|{"columns": ["order"], "rows": [["O1"], ["O3"], ["O4"], ["O5"], ["O6"], ["O7"]]}
+67|existence|orders|source=orders | where items.price > 100 | fields order|{"columns": ["order"], "rows": [["O1"], ["O5"]]}
+68|existence|orders|source=orders | where items.price < 100 | fields order|{"columns": ["order"], "rows": [["O1"], ["O2"], ["O4"], ["O5"], ["O6"], ["O7"]]}
+69|existence|orders|source=orders | where items.price >= 100 | fields order|{"columns": ["order"], "rows": [["O1"], ["O3"], ["O5"]]}
+70|existence|orders|source=orders | where items.price <= 100 | fields order|{"columns": ["order"], "rows": [["O1"], ["O2"], ["O3"], ["O4"], ["O5"], ["O6"], ["O7"]]}
+71|existence|orders|source=orders | where items.price = 100 | fields order|{"columns": ["order"], "rows": [["O3"]]}
+72|existence|orders|source=orders | where items.price != 100 | fields order|{"columns": ["order"], "rows": [["O1"], ["O2"], ["O4"], ["O5"], ["O6"], ["O7"]]}
+73|existence|students|source=students | where scores.score > 60 | fields student|{"columns": ["student"], "rows": [["Amy"], ["Cid"], ["Discrim"]]}
+74|existence|students|source=students | where scores.score < 60 | fields student|{"columns": ["student"], "rows": [["Dax"]]}
+75|existence|students|source=students | where scores.score >= 60 | fields student|{"columns": ["student"], "rows": [["Amy"], ["Ben"], ["Cid"], ["Discrim"]]}
+76|existence|students|source=students | where scores.score <= 60 | fields student|{"columns": ["student"], "rows": [["Ben"], ["Dax"], ["Discrim"]]}
+77|existence|students|source=students | where scores.score = 60 | fields student|{"columns": ["student"], "rows": [["Ben"], ["Discrim"]]}
+78|existence|students|source=students | where scores.score != 60 | fields student|{"columns": ["student"], "rows": [["Amy"], ["Cid"], ["Dax"], ["Discrim"]]}
+79|existence|students|source=students | where scores.score > 80 | fields student|{"columns": ["student"], "rows": [["Amy"], ["Cid"], ["Discrim"]]}
+80|existence|students|source=students | where scores.score < 80 | fields student|{"columns": ["student"], "rows": [["Ben"], ["Cid"], ["Dax"], ["Discrim"]]}
+81|existence|students|source=students | where scores.score >= 80 | fields student|{"columns": ["student"], "rows": [["Amy"], ["Cid"], ["Discrim"]]}
+82|existence|students|source=students | where scores.score <= 80 | fields student|{"columns": ["student"], "rows": [["Ben"], ["Cid"], ["Dax"], ["Discrim"]]}
+83|existence|students|source=students | where scores.score = 80 | fields student|{"columns": ["student"], "rows": []}
+84|existence|students|source=students | where scores.score != 80 | fields student|{"columns": ["student"], "rows": [["Amy"], ["Ben"], ["Cid"], ["Dax"], ["Discrim"]]}
+85|existence|students|source=students | where scores.score > 90 | fields student|{"columns": ["student"], "rows": [["Amy"], ["Cid"], ["Discrim"]]}
+86|existence|students|source=students | where scores.score < 90 | fields student|{"columns": ["student"], "rows": [["Amy"], ["Ben"], ["Cid"], ["Dax"], ["Discrim"]]}
+87|existence|students|source=students | where scores.score >= 90 | fields student|{"columns": ["student"], "rows": [["Amy"], ["Cid"], ["Discrim"]]}
+88|existence|students|source=students | where scores.score <= 90 | fields student|{"columns": ["student"], "rows": [["Amy"], ["Ben"], ["Cid"], ["Dax"], ["Discrim"]]}
+89|existence|students|source=students | where scores.score = 90 | fields student|{"columns": ["student"], "rows": [["Cid"]]}
+90|existence|students|source=students | where scores.score != 90 | fields student|{"columns": ["student"], "rows": [["Amy"], ["Ben"], ["Cid"], ["Dax"], ["Discrim"]]}
+91|existence|teams|source=teams | where members.role = "dev" | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Discrim1"], ["Eagles"], ["Falcons"], ["NegTest"], ["Owls"], ["SortHigh"], ["SortLow"], ["Wolves"]]}
+92|existence|teams|source=teams | where members.role != "dev" | fields team|{"columns": ["team"], "rows": [["Eagles"], ["Falcons"], ["Hawks"], ["Owls"]]}
+93|existence|teams|source=teams | where members.role = "lead" | fields team|{"columns": ["team"], "rows": [["Eagles"], ["Falcons"], ["Hawks"], ["Owls"]]}
+94|existence|teams|source=teams | where members.role != "lead" | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Discrim1"], ["Eagles"], ["Falcons"], ["NegTest"], ["Owls"], ["SortHigh"], ["SortLow"], ["Wolves"]]}
+95|existence|orders|source=orders | where items.category = "tools" | fields order|{"columns": ["order"], "rows": [["O1"], ["O3"]]}
+96|existence|orders|source=orders | where items.category != "tools" | fields order|{"columns": ["order"], "rows": [["O1"], ["O2"], ["O4"], ["O5"], ["O6"], ["O7"]]}
+97|existence|orders|source=orders | where items.category = "elec" | fields order|{"columns": ["order"], "rows": [["O1"], ["O2"], ["O5"]]}
+98|existence|orders|source=orders | where items.category != "elec" | fields order|{"columns": ["order"], "rows": [["O1"], ["O3"], ["O4"], ["O6"], ["O7"]]}
+99|existence|orders|source=orders | where items.category = "hardware" | fields order|{"columns": ["order"], "rows": [["O4"]]}
+100|existence|orders|source=orders | where items.category != "hardware" | fields order|{"columns": ["order"], "rows": [["O1"], ["O2"], ["O3"], ["O5"], ["O6"], ["O7"]]}
+101|existence|orders|source=orders | where items.category = "x" | fields order|{"columns": ["order"], "rows": [["O6"]]}
+102|existence|orders|source=orders | where items.category != "x" | fields order|{"columns": ["order"], "rows": [["O1"], ["O2"], ["O3"], ["O4"], ["O5"], ["O7"]]}
+103|existence|orders|source=orders | where items.category = "y" | fields order|{"columns": ["order"], "rows": [["O7"]]}
+104|existence|orders|source=orders | where items.category != "y" | fields order|{"columns": ["order"], "rows": [["O1"], ["O2"], ["O3"], ["O4"], ["O5"], ["O6"]]}
+105|existence|students|source=students | where scores.term = "fall" | fields student|{"columns": ["student"], "rows": [["Amy"], ["Ben"], ["Cid"], ["Dax"], ["Discrim"]]}
+106|existence|students|source=students | where scores.term != "fall" | fields student|{"columns": ["student"], "rows": [["Cid"], ["Discrim"]]}
+107|existence|students|source=students | where scores.term = "spring" | fields student|{"columns": ["student"], "rows": [["Cid"], ["Discrim"]]}
+108|existence|students|source=students | where scores.term != "spring" | fields student|{"columns": ["student"], "rows": [["Amy"], ["Ben"], ["Cid"], ["Dax"], ["Discrim"]]}
+109|existence|students|source=students | where scores.subject = "Math" | fields student|{"columns": ["student"], "rows": [["Amy"], ["Ben"], ["Cid"], ["Dax"], ["Discrim"]]}
+110|existence|students|source=students | where scores.subject != "Math" | fields student|{"columns": ["student"], "rows": [["Amy"], ["Cid"], ["Dax"], ["Discrim"]]}
+111|existence|students|source=students | where scores.subject = "Sci" | fields student|{"columns": ["student"], "rows": [["Amy"], ["Cid"], ["Dax"], ["Discrim"]]}
+112|existence|students|source=students | where scores.subject != "Sci" | fields student|{"columns": ["student"], "rows": [["Amy"], ["Ben"], ["Cid"], ["Dax"], ["Discrim"]]}
+113|existence|students|source=students | where scores.subject = "Art" | fields student|{"columns": ["student"], "rows": [["Cid"]]}
+114|existence|students|source=students | where scores.subject != "Art" | fields student|{"columns": ["student"], "rows": [["Amy"], ["Ben"], ["Cid"], ["Dax"], ["Discrim"]]}
+115|joint_and|teams|source=teams | where members.hours < 30 and members.rating < 6 | fields team|{"columns": ["team"], "rows": [["Eagles"], ["NegTest"], ["SortLow"]]}
+116|joint_and|teams|source=teams | where members.hours < 30 and members.rating > 6 | fields team|{"columns": ["team"], "rows": []}
+117|joint_and|teams|source=teams | where members.hours < 30 and members.rating < 8 | fields team|{"columns": ["team"], "rows": [["Eagles"], ["NegTest"], ["SortLow"]]}
+118|joint_and|teams|source=teams | where members.hours < 30 and members.rating > 8 | fields team|{"columns": ["team"], "rows": []}
+119|joint_and|teams|source=teams | where members.hours > 30 and members.rating < 6 | fields team|{"columns": ["team"], "rows": [["Discrim1"], ["Hawks"], ["SortHigh"]]}
+120|joint_and|teams|source=teams | where members.hours > 30 and members.rating > 6 | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Eagles"], ["Falcons"], ["Owls"], ["Wolves"]]}
+121|joint_and|teams|source=teams | where members.hours > 30 and members.rating < 8 | fields team|{"columns": ["team"], "rows": [["Discrim1"], ["Eagles"], ["Falcons"], ["Hawks"], ["SortHigh"]]}
+122|joint_and|teams|source=teams | where members.hours > 30 and members.rating > 8 | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Falcons"]]}
+123|joint_and|teams|source=teams | where members.hours < 40 and members.rating < 6 | fields team|{"columns": ["team"], "rows": [["Eagles"], ["NegTest"], ["SortLow"]]}
+124|joint_and|teams|source=teams | where members.hours < 40 and members.rating > 6 | fields team|{"columns": ["team"], "rows": [["Discrim1"], ["Eagles"], ["Owls"]]}
+125|joint_and|teams|source=teams | where members.hours < 40 and members.rating < 8 | fields team|{"columns": ["team"], "rows": [["Eagles"], ["Falcons"], ["NegTest"], ["SortLow"]]}
+126|joint_and|teams|source=teams | where members.hours < 40 and members.rating > 8 | fields team|{"columns": ["team"], "rows": [["Discrim1"], ["Eagles"]]}
+127|joint_and|teams|source=teams | where members.hours > 40 and members.rating < 6 | fields team|{"columns": ["team"], "rows": [["Discrim1"], ["Hawks"], ["SortHigh"]]}
+128|joint_and|teams|source=teams | where members.hours > 40 and members.rating > 6 | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Eagles"], ["Owls"], ["Wolves"]]}
+129|joint_and|teams|source=teams | where members.hours > 40 and members.rating < 8 | fields team|{"columns": ["team"], "rows": [["Discrim1"], ["Eagles"], ["Hawks"], ["SortHigh"]]}
+130|joint_and|teams|source=teams | where members.hours > 40 and members.rating > 8 | fields team|{"columns": ["team"], "rows": [["DedupTeam"]]}
+131|joint_and|orders|source=orders | where items.qty < 5 and items.price < 20 | fields order|{"columns": ["order"], "rows": [["O7"]]}
+132|joint_and|orders|source=orders | where items.qty < 5 and items.price > 20 | fields order|{"columns": ["order"], "rows": [["O1"], ["O2"], ["O3"], ["O5"], ["O6"]]}
+133|joint_and|orders|source=orders | where items.qty < 5 and items.price < 50 | fields order|{"columns": ["order"], "rows": [["O6"], ["O7"]]}
+134|joint_and|orders|source=orders | where items.qty < 5 and items.price > 50 | fields order|{"columns": ["order"], "rows": [["O1"], ["O3"], ["O5"]]}
+135|joint_and|orders|source=orders | where items.qty > 5 and items.price < 20 | fields order|{"columns": ["order"], "rows": [["O4"], ["O6"]]}
+136|joint_and|orders|source=orders | where items.qty > 5 and items.price > 20 | fields order|{"columns": ["order"], "rows": []}
+137|joint_and|orders|source=orders | where items.qty > 5 and items.price < 50 | fields order|{"columns": ["order"], "rows": [["O4"], ["O6"]]}
+138|joint_and|orders|source=orders | where items.qty > 5 and items.price > 50 | fields order|{"columns": ["order"], "rows": []}
+139|joint_and|orders|source=orders | where items.qty < 10 and items.price < 20 | fields order|{"columns": ["order"], "rows": [["O7"]]}
+140|joint_and|orders|source=orders | where items.qty < 10 and items.price > 20 | fields order|{"columns": ["order"], "rows": [["O1"], ["O2"], ["O3"], ["O5"], ["O6"]]}
+141|joint_and|orders|source=orders | where items.qty < 10 and items.price < 50 | fields order|{"columns": ["order"], "rows": [["O6"], ["O7"]]}
+142|joint_and|orders|source=orders | where items.qty < 10 and items.price > 50 | fields order|{"columns": ["order"], "rows": [["O1"], ["O3"], ["O5"]]}
+143|joint_and|orders|source=orders | where items.qty > 10 and items.price < 20 | fields order|{"columns": ["order"], "rows": [["O6"]]}
+144|joint_and|orders|source=orders | where items.qty > 10 and items.price > 20 | fields order|{"columns": ["order"], "rows": []}
+145|joint_and|orders|source=orders | where items.qty > 10 and items.price < 50 | fields order|{"columns": ["order"], "rows": [["O6"]]}
+146|joint_and|orders|source=orders | where items.qty > 10 and items.price > 50 | fields order|{"columns": ["order"], "rows": []}
+147|string_numeric_joint|teams|source=teams | where members.hours < 30 and members.role = "dev" | fields team|{"columns": ["team"], "rows": [["Eagles"], ["NegTest"], ["SortLow"]]}
+148|string_numeric_joint|teams|source=teams | where members.hours < 30 and members.role = "lead" | fields team|{"columns": ["team"], "rows": []}
+149|string_numeric_joint|teams|source=teams | where members.hours > 30 and members.role = "dev" | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Discrim1"], ["Falcons"], ["Owls"], ["SortHigh"], ["Wolves"]]}
+150|string_numeric_joint|teams|source=teams | where members.hours > 30 and members.role = "lead" | fields team|{"columns": ["team"], "rows": [["Eagles"], ["Falcons"], ["Hawks"], ["Owls"]]}
+151|string_numeric_joint|teams|source=teams | where members.hours < 40 and members.role = "dev" | fields team|{"columns": ["team"], "rows": [["Discrim1"], ["Eagles"], ["Falcons"], ["NegTest"], ["Owls"], ["SortLow"]]}
+152|string_numeric_joint|teams|source=teams | where members.hours < 40 and members.role = "lead" | fields team|{"columns": ["team"], "rows": []}
+153|string_numeric_joint|teams|source=teams | where members.hours > 40 and members.role = "dev" | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Discrim1"], ["SortHigh"], ["Wolves"]]}
+154|string_numeric_joint|teams|source=teams | where members.hours > 40 and members.role = "lead" | fields team|{"columns": ["team"], "rows": [["Eagles"], ["Hawks"], ["Owls"]]}
+155|string_numeric_joint|teams|source=teams | where members.rating < 6 and members.role = "dev" | fields team|{"columns": ["team"], "rows": [["Discrim1"], ["Eagles"], ["NegTest"], ["SortHigh"], ["SortLow"]]}
+156|string_numeric_joint|teams|source=teams | where members.rating < 6 and members.role = "lead" | fields team|{"columns": ["team"], "rows": [["Hawks"]]}
+157|string_numeric_joint|teams|source=teams | where members.rating > 6 and members.role = "dev" | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Discrim1"], ["Eagles"], ["Owls"], ["Wolves"]]}
+158|string_numeric_joint|teams|source=teams | where members.rating > 6 and members.role = "lead" | fields team|{"columns": ["team"], "rows": [["Eagles"], ["Falcons"], ["Owls"]]}
+159|string_numeric_joint|teams|source=teams | where members.rating < 8 and members.role = "dev" | fields team|{"columns": ["team"], "rows": [["Discrim1"], ["Eagles"], ["Falcons"], ["NegTest"], ["SortHigh"], ["SortLow"]]}
+160|string_numeric_joint|teams|source=teams | where members.rating < 8 and members.role = "lead" | fields team|{"columns": ["team"], "rows": [["Eagles"], ["Hawks"]]}
+161|string_numeric_joint|teams|source=teams | where members.rating > 8 and members.role = "dev" | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Discrim1"], ["Eagles"]]}
+162|string_numeric_joint|teams|source=teams | where members.rating > 8 and members.role = "lead" | fields team|{"columns": ["team"], "rows": [["Falcons"]]}
+163|string_numeric_joint|orders|source=orders | where items.qty < 3 and items.category = "tools" | fields order|{"columns": ["order"], "rows": [["O1"], ["O3"]]}
+164|string_numeric_joint|orders|source=orders | where items.qty < 3 and items.category = "elec" | fields order|{"columns": ["order"], "rows": [["O1"], ["O5"]]}
+165|string_numeric_joint|orders|source=orders | where items.qty > 3 and items.category = "tools" | fields order|{"columns": ["order"], "rows": [["O3"]]}
+166|string_numeric_joint|orders|source=orders | where items.qty > 3 and items.category = "elec" | fields order|{"columns": ["order"], "rows": []}
+167|string_numeric_joint|orders|source=orders | where items.qty < 10 and items.category = "tools" | fields order|{"columns": ["order"], "rows": [["O1"], ["O3"]]}
+168|string_numeric_joint|orders|source=orders | where items.qty < 10 and items.category = "elec" | fields order|{"columns": ["order"], "rows": [["O1"], ["O2"], ["O5"]]}
+169|string_numeric_joint|orders|source=orders | where items.qty > 10 and items.category = "tools" | fields order|{"columns": ["order"], "rows": []}
+170|string_numeric_joint|orders|source=orders | where items.qty > 10 and items.category = "elec" | fields order|{"columns": ["order"], "rows": []}
+171|string_numeric_joint|orders|source=orders | where items.price < 20 and items.category = "tools" | fields order|{"columns": ["order"], "rows": []}
+172|string_numeric_joint|orders|source=orders | where items.price < 20 and items.category = "elec" | fields order|{"columns": ["order"], "rows": []}
+173|string_numeric_joint|orders|source=orders | where items.price > 20 and items.category = "tools" | fields order|{"columns": ["order"], "rows": [["O1"], ["O3"]]}
+174|string_numeric_joint|orders|source=orders | where items.price > 20 and items.category = "elec" | fields order|{"columns": ["order"], "rows": [["O1"], ["O2"], ["O5"]]}
+175|string_numeric_joint|orders|source=orders | where items.price < 50 and items.category = "tools" | fields order|{"columns": ["order"], "rows": []}
+176|string_numeric_joint|orders|source=orders | where items.price < 50 and items.category = "elec" | fields order|{"columns": ["order"], "rows": []}
+177|string_numeric_joint|orders|source=orders | where items.price > 50 and items.category = "tools" | fields order|{"columns": ["order"], "rows": [["O3"]]}
+178|string_numeric_joint|orders|source=orders | where items.price > 50 and items.category = "elec" | fields order|{"columns": ["order"], "rows": [["O1"], ["O5"]]}
+179|string_numeric_joint|students|source=students | where scores.score < 70 and scores.term = "fall" | fields student|{"columns": ["student"], "rows": [["Ben"], ["Dax"]]}
+180|string_numeric_joint|students|source=students | where scores.score < 70 and scores.term = "spring" | fields student|{"columns": ["student"], "rows": [["Discrim"]]}
+181|string_numeric_joint|students|source=students | where scores.score > 70 and scores.term = "fall" | fields student|{"columns": ["student"], "rows": [["Amy"], ["Cid"], ["Discrim"]]}
+182|string_numeric_joint|students|source=students | where scores.score > 70 and scores.term = "spring" | fields student|{"columns": ["student"], "rows": [["Cid"]]}
+183|string_numeric_joint|students|source=students | where scores.score < 90 and scores.term = "fall" | fields student|{"columns": ["student"], "rows": [["Amy"], ["Ben"], ["Cid"], ["Dax"]]}
+184|string_numeric_joint|students|source=students | where scores.score < 90 and scores.term = "spring" | fields student|{"columns": ["student"], "rows": [["Discrim"]]}
+185|string_numeric_joint|students|source=students | where scores.score > 90 and scores.term = "fall" | fields student|{"columns": ["student"], "rows": [["Amy"], ["Discrim"]]}
+186|string_numeric_joint|students|source=students | where scores.score > 90 and scores.term = "spring" | fields student|{"columns": ["student"], "rows": [["Cid"]]}
+187|negation|teams|source=teams | where not (members.hours > 30) | fields team|{"columns": ["team"], "rows": [["Discrim1"], ["Eagles"], ["NegTest"], ["SortLow"]]}
+188|negation|teams|source=teams | where not (members.hours < 30) | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Discrim1"], ["Eagles"], ["Falcons"], ["Hawks"], ["Owls"], ["SortHigh"], ["Wolves"]]}
+189|negation|teams|source=teams | where not (members.hours >= 30) | fields team|{"columns": ["team"], "rows": [["Eagles"], ["NegTest"], ["SortLow"]]}
+190|negation|teams|source=teams | where not (members.hours <= 30) | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Discrim1"], ["Eagles"], ["Falcons"], ["Hawks"], ["Owls"], ["SortHigh"], ["Wolves"]]}
+191|negation|teams|source=teams | where not (members.hours > 40) | fields team|{"columns": ["team"], "rows": [["Discrim1"], ["Eagles"], ["Falcons"], ["NegTest"], ["Owls"], ["SortLow"]]}
+192|negation|teams|source=teams | where not (members.hours < 40) | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Discrim1"], ["Eagles"], ["Falcons"], ["Hawks"], ["Owls"], ["SortHigh"], ["Wolves"]]}
+193|negation|teams|source=teams | where not (members.hours >= 40) | fields team|{"columns": ["team"], "rows": [["Discrim1"], ["Eagles"], ["Falcons"], ["NegTest"], ["Owls"], ["SortLow"]]}
+194|negation|teams|source=teams | where not (members.hours <= 40) | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Discrim1"], ["Eagles"], ["Hawks"], ["Owls"], ["SortHigh"], ["Wolves"]]}
+195|negation|teams|source=teams | where not (members.rating > 5) | fields team|{"columns": ["team"], "rows": [["Discrim1"], ["Eagles"], ["Hawks"], ["NegTest"], ["SortHigh"], ["SortLow"]]}
+196|negation|teams|source=teams | where not (members.rating < 5) | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Discrim1"], ["Eagles"], ["Falcons"], ["Owls"], ["Wolves"]]}
+197|negation|teams|source=teams | where not (members.rating >= 5) | fields team|{"columns": ["team"], "rows": [["Hawks"], ["NegTest"], ["SortHigh"], ["SortLow"]]}
+198|negation|teams|source=teams | where not (members.rating <= 5) | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Discrim1"], ["Eagles"], ["Falcons"], ["Owls"], ["Wolves"]]}
+199|negation|teams|source=teams | where not (members.rating > 8) | fields team|{"columns": ["team"], "rows": [["Discrim1"], ["Eagles"], ["Falcons"], ["Hawks"], ["NegTest"], ["Owls"], ["SortHigh"], ["SortLow"], ["Wolves"]]}
+200|negation|teams|source=teams | where not (members.rating < 8) | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Discrim1"], ["Eagles"], ["Falcons"], ["Owls"], ["Wolves"]]}
+201|negation|teams|source=teams | where not (members.rating >= 8) | fields team|{"columns": ["team"], "rows": [["Discrim1"], ["Eagles"], ["Falcons"], ["Hawks"], ["NegTest"], ["SortHigh"], ["SortLow"]]}
+202|negation|teams|source=teams | where not (members.rating <= 8) | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Discrim1"], ["Eagles"], ["Falcons"]]}
+203|negation|orders|source=orders | where not (items.price > 50) | fields order|{"columns": ["order"], "rows": [["O1"], ["O2"], ["O4"], ["O5"], ["O6"], ["O7"]]}
+204|negation|orders|source=orders | where not (items.price < 50) | fields order|{"columns": ["order"], "rows": [["O1"], ["O2"], ["O3"], ["O5"]]}
+205|negation|orders|source=orders | where not (items.price > 100) | fields order|{"columns": ["order"], "rows": [["O1"], ["O2"], ["O3"], ["O4"], ["O5"], ["O6"], ["O7"]]}
+206|negation|orders|source=orders | where not (items.price < 100) | fields order|{"columns": ["order"], "rows": [["O1"], ["O3"], ["O5"]]}
+207|negation|orders|source=orders | where not (items.qty > 3) | fields order|{"columns": ["order"], "rows": [["O1"], ["O2"], ["O3"], ["O5"], ["O6"]]}
+208|negation|orders|source=orders | where not (items.qty < 3) | fields order|{"columns": ["order"], "rows": [["O2"], ["O3"], ["O4"], ["O6"], ["O7"]]}
+209|negation|orders|source=orders | where not (items.qty > 10) | fields order|{"columns": ["order"], "rows": [["O1"], ["O2"], ["O3"], ["O4"], ["O5"], ["O6"], ["O7"]]}
+210|negation|orders|source=orders | where not (items.qty < 10) | fields order|{"columns": ["order"], "rows": [["O4"], ["O6"]]}
+211|negation|students|source=students | where not (scores.score > 60) | fields student|{"columns": ["student"], "rows": [["Ben"], ["Dax"], ["Discrim"]]}
+212|negation|students|source=students | where not (scores.score < 60) | fields student|{"columns": ["student"], "rows": [["Amy"], ["Ben"], ["Cid"], ["Discrim"]]}
+213|negation|students|source=students | where not (scores.score > 90) | fields student|{"columns": ["student"], "rows": [["Amy"], ["Ben"], ["Cid"], ["Dax"], ["Discrim"]]}
+214|negation|students|source=students | where not (scores.score < 90) | fields student|{"columns": ["student"], "rows": [["Amy"], ["Cid"], ["Discrim"]]}
+215|arithmetic|teams|source=teams | where members.hours % 2 = 0 | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Discrim1"], ["Eagles"], ["Falcons"], ["Hawks"], ["NegTest"], ["Owls"]]}
+216|arithmetic|teams|source=teams | where members.hours % 2 = 1 | fields team|{"columns": ["team"], "rows": [["Discrim1"], ["Falcons"], ["Owls"], ["SortHigh"], ["SortLow"], ["Wolves"]]}
+217|arithmetic|teams|source=teams | where members.hours % 5 = 0 | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Discrim1"], ["Eagles"], ["Falcons"], ["NegTest"], ["SortLow"], ["Wolves"]]}
+218|arithmetic|teams|source=teams | where members.hours % 5 = 1 | fields team|{"columns": ["team"], "rows": [["Owls"]]}
+219|arithmetic|teams|source=teams | where members.hours % 10 = 0 | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Discrim1"], ["Eagles"], ["Falcons"], ["NegTest"]]}
+220|arithmetic|teams|source=teams | where members.hours % 10 = 1 | fields team|{"columns": ["team"], "rows": [["Owls"]]}
+221|arithmetic|teams|source=teams | where members.rating % 2 = 0 | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Falcons"], ["Hawks"], ["NegTest"], ["Owls"], ["Wolves"]]}
+222|arithmetic|teams|source=teams | where members.rating % 2 = 1 | fields team|{"columns": ["team"], "rows": [["Discrim1"], ["Eagles"], ["Falcons"], ["NegTest"], ["SortHigh"], ["SortLow"]]}
+223|arithmetic|teams|source=teams | where members.rating % 5 = 0 | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Discrim1"], ["Eagles"]]}
+224|arithmetic|teams|source=teams | where members.rating % 5 = 1 | fields team|{"columns": ["team"], "rows": [["Falcons"], ["SortHigh"], ["SortLow"]]}
+225|arithmetic|teams|source=teams | where members.rating % 10 = 0 | fields team|{"columns": ["team"], "rows": [["DedupTeam"]]}
+226|arithmetic|teams|source=teams | where members.rating % 10 = 1 | fields team|{"columns": ["team"], "rows": [["SortHigh"], ["SortLow"]]}
+227|arithmetic|orders|source=orders | where items.qty % 2 = 0 | fields order|{"columns": ["order"], "rows": [["O1"], ["O4"], ["O5"], ["O6"], ["O7"]]}
+228|arithmetic|orders|source=orders | where items.qty % 2 = 1 | fields order|{"columns": ["order"], "rows": [["O1"], ["O2"], ["O3"], ["O5"], ["O7"]]}
+229|arithmetic|orders|source=orders | where items.qty % 5 = 0 | fields order|{"columns": ["order"], "rows": [["O3"], ["O4"], ["O6"], ["O7"]]}
+230|arithmetic|orders|source=orders | where items.qty % 5 = 1 | fields order|{"columns": ["order"], "rows": [["O1"], ["O3"], ["O5"]]}
+231|arithmetic|orders|source=orders | where items.qty % 10 = 0 | fields order|{"columns": ["order"], "rows": [["O4"], ["O6"]]}
+232|arithmetic|orders|source=orders | where items.qty % 10 = 1 | fields order|{"columns": ["order"], "rows": [["O1"], ["O3"], ["O5"]]}
+233|arithmetic|orders|source=orders | where items.price % 2 = 0 | fields order|{"columns": ["order"], "rows": [["O1"], ["O2"], ["O3"], ["O5"], ["O6"], ["O7"]]}
+234|arithmetic|orders|source=orders | where items.price % 2 = 1 | fields order|{"columns": ["order"], "rows": [["O4"], ["O6"], ["O7"]]}
+235|arithmetic|orders|source=orders | where items.price % 5 = 0 | fields order|{"columns": ["order"], "rows": [["O1"], ["O2"], ["O3"], ["O5"], ["O6"], ["O7"]]}
+236|arithmetic|orders|source=orders | where items.price % 5 = 1 | fields order|{"columns": ["order"], "rows": [["O7"]]}
+237|arithmetic|orders|source=orders | where items.price % 10 = 0 | fields order|{"columns": ["order"], "rows": [["O1"], ["O2"], ["O3"], ["O5"], ["O6"], ["O7"]]}
+238|arithmetic|orders|source=orders | where items.price % 10 = 1 | fields order|{"columns": ["order"], "rows": [["O7"]]}
+239|arithmetic|students|source=students | where scores.score % 2 = 0 | fields student|{"columns": ["student"], "rows": [["Amy"], ["Ben"], ["Cid"], ["Dax"], ["Discrim"]]}
+240|arithmetic|students|source=students | where scores.score % 2 = 1 | fields student|{"columns": ["student"], "rows": [["Amy"], ["Dax"]]}
+241|arithmetic|students|source=students | where scores.score % 5 = 0 | fields student|{"columns": ["student"], "rows": [["Amy"], ["Ben"], ["Cid"], ["Dax"], ["Discrim"]]}
+242|arithmetic|students|source=students | where scores.score % 5 = 1 | fields student|{"columns": ["student"], "rows": [["Discrim"]]}
+243|arithmetic|students|source=students | where scores.score % 10 = 0 | fields student|{"columns": ["student"], "rows": [["Ben"], ["Cid"], ["Discrim"]]}
+244|arithmetic|students|source=students | where scores.score % 10 = 1 | fields student|{"columns": ["student"], "rows": []}
+245|compound_arith|teams|source=teams | where members.hours < 30 and members.hours % 2 = 0 | fields team|{"columns": ["team"], "rows": [["Eagles"], ["NegTest"]]}
+246|compound_arith|teams|source=teams | where members.hours < 30 and members.hours % 5 = 0 | fields team|{"columns": ["team"], "rows": [["Eagles"], ["NegTest"], ["SortLow"]]}
+247|compound_arith|teams|source=teams | where members.hours > 30 and members.hours % 2 = 0 | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Eagles"], ["Falcons"], ["Hawks"], ["Owls"]]}
+248|compound_arith|teams|source=teams | where members.hours > 30 and members.hours % 5 = 0 | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Discrim1"], ["Eagles"], ["Falcons"], ["Wolves"]]}
+249|compound_arith|teams|source=teams | where members.hours < 40 and members.hours % 2 = 0 | fields team|{"columns": ["team"], "rows": [["Discrim1"], ["Eagles"], ["NegTest"], ["Owls"]]}
+250|compound_arith|teams|source=teams | where members.hours < 40 and members.hours % 5 = 0 | fields team|{"columns": ["team"], "rows": [["Discrim1"], ["Eagles"], ["Falcons"], ["NegTest"], ["SortLow"]]}
+251|compound_arith|teams|source=teams | where members.hours > 40 and members.hours % 2 = 0 | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Eagles"], ["Hawks"]]}
+252|compound_arith|teams|source=teams | where members.hours > 40 and members.hours % 5 = 0 | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Discrim1"], ["Eagles"], ["Wolves"]]}
+253|compound_arith|teams|source=teams | where members.rating < 5 and members.rating % 2 = 0 | fields team|{"columns": ["team"], "rows": [["Hawks"], ["NegTest"]]}
+254|compound_arith|teams|source=teams | where members.rating < 5 and members.rating % 5 = 0 | fields team|{"columns": ["team"], "rows": []}
+255|compound_arith|teams|source=teams | where members.rating > 5 and members.rating % 2 = 0 | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Falcons"], ["Owls"], ["Wolves"]]}
+256|compound_arith|teams|source=teams | where members.rating > 5 and members.rating % 5 = 0 | fields team|{"columns": ["team"], "rows": [["DedupTeam"]]}
+257|compound_arith|teams|source=teams | where members.rating < 8 and members.rating % 2 = 0 | fields team|{"columns": ["team"], "rows": [["Falcons"], ["Hawks"], ["NegTest"]]}
+258|compound_arith|teams|source=teams | where members.rating < 8 and members.rating % 5 = 0 | fields team|{"columns": ["team"], "rows": [["Discrim1"], ["Eagles"]]}
+259|compound_arith|teams|source=teams | where members.rating > 8 and members.rating % 2 = 0 | fields team|{"columns": ["team"], "rows": [["DedupTeam"]]}
+260|compound_arith|teams|source=teams | where members.rating > 8 and members.rating % 5 = 0 | fields team|{"columns": ["team"], "rows": [["DedupTeam"]]}
+261|compound_arith|orders|source=orders | where items.qty < 3 and items.qty % 2 = 0 | fields order|{"columns": ["order"], "rows": [["O1"], ["O5"], ["O6"]]}
+262|compound_arith|orders|source=orders | where items.qty < 3 and items.qty % 5 = 0 | fields order|{"columns": ["order"], "rows": []}
+263|compound_arith|orders|source=orders | where items.qty > 3 and items.qty % 2 = 0 | fields order|{"columns": ["order"], "rows": [["O4"], ["O6"], ["O7"]]}
+264|compound_arith|orders|source=orders | where items.qty > 3 and items.qty % 5 = 0 | fields order|{"columns": ["order"], "rows": [["O3"], ["O4"], ["O6"], ["O7"]]}
+265|compound_arith|orders|source=orders | where items.qty < 10 and items.qty % 2 = 0 | fields order|{"columns": ["order"], "rows": [["O1"], ["O5"], ["O6"], ["O7"]]}
+266|compound_arith|orders|source=orders | where items.qty < 10 and items.qty % 5 = 0 | fields order|{"columns": ["order"], "rows": [["O3"], ["O7"]]}
+267|compound_arith|orders|source=orders | where items.qty > 10 and items.qty % 2 = 0 | fields order|{"columns": ["order"], "rows": [["O6"]]}
+268|compound_arith|orders|source=orders | where items.qty > 10 and items.qty % 5 = 0 | fields order|{"columns": ["order"], "rows": [["O6"]]}
+269|compound_arith|orders|source=orders | where items.price < 20 and items.price % 2 = 0 | fields order|{"columns": ["order"], "rows": [["O7"]]}
+270|compound_arith|orders|source=orders | where items.price < 20 and items.price % 5 = 0 | fields order|{"columns": ["order"], "rows": [["O6"], ["O7"]]}
+271|compound_arith|orders|source=orders | where items.price > 20 and items.price % 2 = 0 | fields order|{"columns": ["order"], "rows": [["O1"], ["O2"], ["O3"], ["O5"], ["O6"]]}
+272|compound_arith|orders|source=orders | where items.price > 20 and items.price % 5 = 0 | fields order|{"columns": ["order"], "rows": [["O1"], ["O2"], ["O3"], ["O5"], ["O6"]]}
+273|compound_arith|orders|source=orders | where items.price < 50 and items.price % 2 = 0 | fields order|{"columns": ["order"], "rows": [["O6"], ["O7"]]}
+274|compound_arith|orders|source=orders | where items.price < 50 and items.price % 5 = 0 | fields order|{"columns": ["order"], "rows": [["O6"], ["O7"]]}
+275|compound_arith|orders|source=orders | where items.price > 50 and items.price % 2 = 0 | fields order|{"columns": ["order"], "rows": [["O1"], ["O3"], ["O5"]]}
+276|compound_arith|orders|source=orders | where items.price > 50 and items.price % 5 = 0 | fields order|{"columns": ["order"], "rows": [["O1"], ["O3"], ["O5"]]}
+277|compound_arith|students|source=students | where scores.score < 70 and scores.score % 2 = 0 | fields student|{"columns": ["student"], "rows": [["Ben"], ["Dax"], ["Discrim"]]}
+278|compound_arith|students|source=students | where scores.score < 70 and scores.score % 5 = 0 | fields student|{"columns": ["student"], "rows": [["Ben"], ["Dax"], ["Discrim"]]}
+279|compound_arith|students|source=students | where scores.score > 70 and scores.score % 2 = 0 | fields student|{"columns": ["student"], "rows": [["Amy"], ["Cid"], ["Discrim"]]}
+280|compound_arith|students|source=students | where scores.score > 70 and scores.score % 5 = 0 | fields student|{"columns": ["student"], "rows": [["Amy"], ["Cid"]]}
+281|compound_arith|students|source=students | where scores.score < 90 and scores.score % 2 = 0 | fields student|{"columns": ["student"], "rows": [["Amy"], ["Ben"], ["Cid"], ["Dax"], ["Discrim"]]}
+282|compound_arith|students|source=students | where scores.score < 90 and scores.score % 5 = 0 | fields student|{"columns": ["student"], "rows": [["Ben"], ["Cid"], ["Dax"], ["Discrim"]]}
+283|compound_arith|students|source=students | where scores.score > 90 and scores.score % 2 = 0 | fields student|{"columns": ["student"], "rows": [["Cid"], ["Discrim"]]}
+284|compound_arith|students|source=students | where scores.score > 90 and scores.score % 5 = 0 | fields student|{"columns": ["student"], "rows": [["Amy"]]}
+285|three_clause_and|teams|source=teams | where members.hours > 10 and members.hours < 50 and members.role != "lead" | fields team|{"columns": ["team"], "rows": [["Discrim1"], ["Eagles"], ["Falcons"], ["NegTest"], ["Owls"], ["Wolves"]]}
+286|three_clause_and|teams|source=teams | where members.hours > 10 and members.hours < 50 and members.role != "dev" | fields team|{"columns": ["team"], "rows": [["Falcons"], ["Hawks"], ["Owls"]]}
+287|three_clause_and|teams|source=teams | where members.hours > 20 and members.hours < 45 and members.role != "lead" | fields team|{"columns": ["team"], "rows": [["Discrim1"], ["Eagles"], ["Falcons"], ["Owls"]]}
+288|three_clause_and|teams|source=teams | where members.hours > 20 and members.hours < 45 and members.role != "dev" | fields team|{"columns": ["team"], "rows": [["Falcons"], ["Hawks"], ["Owls"]]}
+289|three_clause_and|orders|source=orders | where items.qty > 1 and items.qty < 10 and items.category != "tools" | fields order|{"columns": ["order"], "rows": [["O2"], ["O5"], ["O6"], ["O7"]]}
+290|three_clause_and|orders|source=orders | where items.qty > 1 and items.qty < 10 and items.category != "elec" | fields order|{"columns": ["order"], "rows": [["O1"], ["O3"], ["O6"], ["O7"]]}
+291|three_clause_and|orders|source=orders | where items.qty > 2 and items.qty < 6 and items.category != "tools" | fields order|{"columns": ["order"], "rows": [["O2"], ["O7"]]}
+292|three_clause_and|orders|source=orders | where items.qty > 2 and items.qty < 6 and items.category != "elec" | fields order|{"columns": ["order"], "rows": [["O3"], ["O7"]]}
+293|three_clause_and|students|source=students | where scores.score > 50 and scores.score < 95 and scores.term != "spring" | fields student|{"columns": ["student"], "rows": [["Amy"], ["Ben"], ["Cid"], ["Dax"]]}
+294|three_clause_and|students|source=students | where scores.score > 50 and scores.score < 95 and scores.term != "fall" | fields student|{"columns": ["student"], "rows": [["Cid"], ["Discrim"]]}
+295|three_clause_and|students|source=students | where scores.score > 60 and scores.score < 92 and scores.term != "spring" | fields student|{"columns": ["student"], "rows": [["Amy"], ["Cid"]]}
+296|three_clause_and|students|source=students | where scores.score > 60 and scores.score < 92 and scores.term != "fall" | fields student|{"columns": ["student"], "rows": []}
+297|or_filter|teams|source=teams | where members.hours > 40 or members.hours < 15 | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Discrim1"], ["Eagles"], ["Hawks"], ["NegTest"], ["Owls"], ["SortHigh"], ["SortLow"], ["Wolves"]]}
+298|or_filter|teams|source=teams | where members.hours > 45 or members.hours < 10 | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Eagles"], ["SortHigh"], ["SortLow"]]}
+299|or_filter|teams|source=teams | where members.hours > 50 or members.hours < 20 | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["NegTest"], ["SortHigh"], ["SortLow"]]}
+300|or_filter|teams|source=teams | where members.rating > 8 or members.rating < 2 | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["Discrim1"], ["Eagles"], ["Falcons"], ["SortHigh"], ["SortLow"]]}
+301|or_filter|teams|source=teams | where members.rating > 9 or members.rating < 3 | fields team|{"columns": ["team"], "rows": [["DedupTeam"], ["NegTest"], ["SortHigh"], ["SortLow"]]}
+302|or_filter|orders|source=orders | where items.price > 100 or items.price < 10 | fields order|{"columns": ["order"], "rows": [["O1"], ["O4"], ["O5"], ["O6"]]}
+303|or_filter|orders|source=orders | where items.price > 200 or items.price < 20 | fields order|{"columns": ["order"], "rows": [["O4"], ["O5"], ["O6"], ["O7"]]}
+304|or_filter|orders|source=orders | where items.qty > 10 or items.qty < 2 | fields order|{"columns": ["order"], "rows": [["O1"], ["O3"], ["O5"], ["O6"]]}
+305|or_filter|orders|source=orders | where items.qty > 15 or items.qty < 3 | fields order|{"columns": ["order"], "rows": [["O1"], ["O3"], ["O5"], ["O6"]]}
+306|or_filter|students|source=students | where scores.score > 94 or scores.score < 56 | fields student|{"columns": ["student"], "rows": [["Amy"], ["Dax"], ["Discrim"]]}
+307|or_filter|students|source=students | where scores.score > 90 or scores.score < 58 | fields student|{"columns": ["student"], "rows": [["Amy"], ["Cid"], ["Dax"], ["Discrim"]]}
+308|or_filter|students|source=students | where scores.score > 92 or scores.score < 60 | fields student|{"columns": ["student"], "rows": [["Amy"], ["Dax"], ["Discrim"]]}
+309|plain_projection|teams|source=teams | fields team, members.name|{"columns": ["team", "members.name"], "rows": [["DedupTeam", "Mo"], ["Discrim1", "X"], ["Eagles", "Dee"], ["Falcons", "Ann"], ["Hawks", "Gus"], ["NegTest", "P"], ["Owls", "Hana"], ["SortHigh", "Yul"], ["SortLow", "Zed"], ["Wolves", "Cy"]]}
+310|plain_projection|teams|source=teams | fields team, members.role|{"columns": ["team", "members.role"], "rows": [["DedupTeam", "dev"], ["Discrim1", "dev"], ["Eagles", "lead"], ["Falcons", "lead"], ["Hawks", "lead"], ["NegTest", "dev"], ["Owls", "dev"], ["SortHigh", "dev"], ["SortLow", "dev"], ["Wolves", "dev"]]}
+311|plain_projection|teams|source=teams | fields team, members.hours|{"columns": ["team", "members.hours"], "rows": [["DedupTeam", 60], ["Discrim1", 45], ["Eagles", 50], ["Falcons", 40], ["Hawks", 42], ["NegTest", 10], ["Owls", 38], ["SortHigh", 99], ["SortLow", 5], ["Wolves", 45]]}
+312|plain_projection|teams|source=teams | fields team, members.rating|{"columns": ["team", "members.rating"], "rows": [["DedupTeam", 10], ["Discrim1", 5], ["Eagles", 7], ["Falcons", 9], ["Hawks", 4], ["NegTest", 2], ["Owls", 8], ["SortHigh", 1], ["SortLow", 1], ["Wolves", 8]]}
+313|plain_projection|teams|source=teams | fields team, members.name, members.role|{"columns": ["team", "members.name", "members.role"], "rows": [["DedupTeam", "Mo", "dev"], ["Discrim1", "X", "dev"], ["Eagles", "Dee", "lead"], ["Falcons", "Ann", "lead"], ["Hawks", "Gus", "lead"], ["NegTest", "P", "dev"], ["Owls", "Hana", "dev"], ["SortHigh", "Yul", "dev"], ["SortLow", "Zed", "dev"], ["Wolves", "Cy", "dev"]]}
+314|plain_projection|orders|source=orders | fields order, items.product|{"columns": ["order", "items.product"], "rows": [["O1", "Widget"], ["O2", "Gizmo"], ["O3", "Widget"], ["O4", "Bolt"], ["O5", "Server"], ["O6", "ItemA"], ["O7", "ItemC"]]}
+315|plain_projection|orders|source=orders | fields order, items.category|{"columns": ["order", "items.category"], "rows": [["O1", "tools"], ["O2", "elec"], ["O3", "tools"], ["O4", "hardware"], ["O5", "elec"], ["O6", "x"], ["O7", "y"]]}
+316|plain_projection|orders|source=orders | fields order, items.qty|{"columns": ["order", "items.qty"], "rows": [["O1", 2], ["O2", 3], ["O3", 1], ["O4", 10], ["O5", 1], ["O6", 20], ["O7", 4]]}
+317|plain_projection|orders|source=orders | fields order, items.price|{"columns": ["order", "items.price"], "rows": [["O1", 50], ["O2", 50], ["O3", 100], ["O4", 9], ["O5", 900], ["O6", 5], ["O7", 10]]}
+318|plain_projection|orders|source=orders | fields order, items.product, items.category|{"columns": ["order", "items.product", "items.category"], "rows": [["O1", "Widget", "tools"], ["O2", "Gizmo", "elec"], ["O3", "Widget", "tools"], ["O4", "Bolt", "hardware"], ["O5", "Server", "elec"], ["O6", "ItemA", "x"], ["O7", "ItemC", "y"]]}
+319|plain_projection|students|source=students | fields student, scores.subject|{"columns": ["student", "scores.subject"], "rows": [["Amy", "Math"], ["Ben", "Math"], ["Cid", "Math"], ["Dax", "Math"], ["Discrim", "Math"]]}
+320|plain_projection|students|source=students | fields student, scores.score|{"columns": ["student", "scores.score"], "rows": [["Amy", 95], ["Ben", 60], ["Cid", 90], ["Dax", 55], ["Discrim", 96]]}
+321|plain_projection|students|source=students | fields student, scores.term|{"columns": ["student", "scores.term"], "rows": [["Amy", "fall"], ["Ben", "fall"], ["Cid", "fall"], ["Dax", "fall"], ["Discrim", "fall"]]}
+322|plain_projection|students|source=students | fields student, scores.subject, scores.score|{"columns": ["student", "scores.subject", "scores.score"], "rows": [["Amy", "Math", 95], ["Ben", "Math", 60], ["Cid", "Math", 90], ["Dax", "Math", 55], ["Discrim", "Math", 96]]}
+323|stats_by_child|teams|source=teams | stats count() by members.role|{"columns": ["count()", "members.role"], "rows": [[13, "dev"], [4, "lead"]]}
+324|stats_by_child|orders|source=orders | stats count() by items.category|{"columns": ["count()", "items.category"], "rows": [[4, "elec"], [1, "hardware"], [3, "tools"], [2, "x"], [2, "y"]]}
+325|stats_by_child|orders|source=orders | stats count() by items.product|{"columns": ["count()", "items.product"], "rows": [[1, "Bolt"], [1, "Cable"], [1, "Gadget"], [1, "Gizmo"], [1, "ItemA"], [1, "ItemB"], [1, "ItemC"], [1, "ItemD"], [1, "Server"], [1, "Sprocket"], [2, "Widget"]]}
+326|stats_by_child|students|source=students | stats count() by scores.subject|{"columns": ["count()", "scores.subject"], "rows": [[1, "Art"], [5, "Math"], [4, "Sci"]]}
+327|stats_by_child|students|source=students | stats count() by scores.term|{"columns": ["count()", "scores.term"], "rows": [[8, "fall"], [2, "spring"]]}
+328|explicit_expand|teams|source=teams | expand members | fields team, name|{"columns": ["team", "name"], "rows": [["DedupTeam", "Mo"], ["DedupTeam", "No"], ["Discrim1", "X"], ["Discrim1", "Y"], ["Eagles", "Dee"], ["Eagles", "Eli"], ["Eagles", "Fay"], ["Falcons", "Ann"], ["Falcons", "Bo"], ["Hawks", "Gus"], ["NegTest", "P"], ["NegTest", "Q"], ["Owls", "Hana"], ["Owls", "Ivy"], ["SortHigh", "Yul"], ["SortLow", "Zed"], ["Wolves", "Cy"]]}
+329|explicit_expand|teams|source=teams | expand members | fields team, role|{"columns": ["team", "role"], "rows": [["DedupTeam", "dev"], ["DedupTeam", "dev"], ["Discrim1", "dev"], ["Discrim1", "dev"], ["Eagles", "dev"], ["Eagles", "dev"], ["Eagles", "lead"], ["Falcons", "dev"], ["Falcons", "lead"], ["Hawks", "lead"], ["NegTest", "dev"], ["NegTest", "dev"], ["Owls", "dev"], ["Owls", "lead"], ["SortHigh", "dev"], ["SortLow", "dev"], ["Wolves", "dev"]]}
+330|explicit_expand|orders|source=orders | expand items | fields order, product|{"columns": ["order", "product"], "rows": [["O1", "Gadget"], ["O1", "Widget"], ["O2", "Gizmo"], ["O3", "Sprocket"], ["O3", "Widget"], ["O4", "Bolt"], ["O5", "Cable"], ["O5", "Server"], ["O6", "ItemA"], ["O6", "ItemB"], ["O7", "ItemC"], ["O7", "ItemD"]]}
+331|explicit_expand|orders|source=orders | expand items | fields order, category|{"columns": ["order", "category"], "rows": [["O1", "elec"], ["O1", "tools"], ["O2", "elec"], ["O3", "tools"], ["O3", "tools"], ["O4", "hardware"], ["O5", "elec"], ["O5", "elec"], ["O6", "x"], ["O6", "x"], ["O7", "y"], ["O7", "y"]]}
+332|explicit_expand|students|source=students | expand scores | fields student, subject|{"columns": ["student", "subject"], "rows": [["Amy", "Math"], ["Amy", "Sci"], ["Ben", "Math"], ["Cid", "Art"], ["Cid", "Math"], ["Cid", "Sci"], ["Dax", "Math"], ["Dax", "Sci"], ["Discrim", "Math"], ["Discrim", "Sci"]]}
+333|explicit_expand|students|source=students | expand scores | fields student, term|{"columns": ["student", "term"], "rows": [["Amy", "fall"], ["Amy", "fall"], ["Ben", "fall"], ["Cid", "fall"], ["Cid", "fall"], ["Cid", "spring"], ["Dax", "fall"], ["Dax", "fall"], ["Discrim", "fall"], ["Discrim", "spring"]]}
+334|headline_dedup|teams|source=teams | where members.hours > 20 | stats sum(budget)|{"columns": ["sum(budget)"], "rows": [[3399]]}
+335|headline_dedup|teams|source=teams | where members.hours > 20 | stats avg(budget)|{"columns": ["avg(budget)"], "rows": [[424.875]]}
+336|headline_dedup|teams|source=teams | where members.hours > 30 | stats sum(budget)|{"columns": ["sum(budget)"], "rows": [[3399]]}
+337|headline_dedup|teams|source=teams | where members.hours > 30 | stats avg(budget)|{"columns": ["avg(budget)"], "rows": [[424.875]]}
+338|headline_dedup|teams|source=teams | where members.hours > 40 | stats sum(budget)|{"columns": ["sum(budget)"], "rows": [[2899]]}
+339|headline_dedup|teams|source=teams | where members.hours > 40 | stats avg(budget)|{"columns": ["avg(budget)"], "rows": [[414.1429]]}
+340|headline_dedup|teams|source=teams | where members.rating > 5 | stats sum(budget)|{"columns": ["sum(budget)"], "rows": [[3049]]}
+341|headline_dedup|teams|source=teams | where members.rating > 5 | stats avg(budget)|{"columns": ["avg(budget)"], "rows": [[508.1667]]}
+342|headline_dedup|teams|source=teams | where members.rating > 7 | stats sum(budget)|{"columns": ["sum(budget)"], "rows": [[3049]]}
+343|headline_dedup|teams|source=teams | where members.rating > 7 | stats avg(budget)|{"columns": ["avg(budget)"], "rows": [[508.1667]]}
+344|headline_dedup|orders|source=orders | where items.price > 20 | stats sum(total)|{"columns": ["sum(total)"], "rows": [[2130]]}
+345|headline_dedup|orders|source=orders | where items.price > 20 | stats avg(total)|{"columns": ["avg(total)"], "rows": [[426.0]]}
+346|headline_dedup|orders|source=orders | where items.price > 40 | stats sum(total)|{"columns": ["sum(total)"], "rows": [[2050]]}
+347|headline_dedup|orders|source=orders | where items.price > 40 | stats avg(total)|{"columns": ["avg(total)"], "rows": [[512.5]]}
+348|headline_dedup|orders|source=orders | where items.price > 100 | stats sum(total)|{"columns": ["sum(total)"], "rows": [[1300]]}
+349|headline_dedup|orders|source=orders | where items.price > 100 | stats avg(total)|{"columns": ["avg(total)"], "rows": [[650.0]]}
+350|headline_dedup|orders|source=orders | where items.qty > 2 | stats sum(total)|{"columns": ["sum(total)"], "rows": [[960]]}
+351|headline_dedup|orders|source=orders | where items.qty > 2 | stats avg(total)|{"columns": ["avg(total)"], "rows": [[192.0]]}
+352|headline_dedup|orders|source=orders | where items.qty > 5 | stats sum(total)|{"columns": ["sum(total)"], "rows": [[170]]}
+353|headline_dedup|orders|source=orders | where items.qty > 5 | stats avg(total)|{"columns": ["avg(total)"], "rows": [[85.0]]}
+354|headline_dedup|students|source=students | where scores.score > 60 | stats sum(grade_level)|{"columns": ["sum(grade_level)"], "rows": [[30]]}
+355|headline_dedup|students|source=students | where scores.score > 60 | stats avg(grade_level)|{"columns": ["avg(grade_level)"], "rows": [[10.0]]}
+356|headline_dedup|students|source=students | where scores.score > 80 | stats sum(grade_level)|{"columns": ["sum(grade_level)"], "rows": [[30]]}
+357|headline_dedup|students|source=students | where scores.score > 80 | stats avg(grade_level)|{"columns": ["avg(grade_level)"], "rows": [[10.0]]}
+358|headline_dedup|students|source=students | where scores.score > 90 | stats sum(grade_level)|{"columns": ["sum(grade_level)"], "rows": [[30]]}
+359|headline_dedup|students|source=students | where scores.score > 90 | stats avg(grade_level)|{"columns": ["avg(grade_level)"], "rows": [[10.0]]}
+360|count_dedup|teams|source=teams | where members.hours > 20 | stats count()|{"columns": ["count()"], "rows": [[8]]}
+361|count_dedup|teams|source=teams | where members.hours > 30 | stats count()|{"columns": ["count()"], "rows": [[8]]}
+362|count_dedup|teams|source=teams | where members.hours > 40 | stats count()|{"columns": ["count()"], "rows": [[7]]}
+363|count_dedup|teams|source=teams | where members.rating > 5 | stats count()|{"columns": ["count()"], "rows": [[6]]}
+364|count_dedup|teams|source=teams | where members.rating > 7 | stats count()|{"columns": ["count()"], "rows": [[6]]}
+365|count_dedup|teams|source=teams | where members.rating > 8 | stats count()|{"columns": ["count()"], "rows": [[4]]}
+366|count_dedup|orders|source=orders | where items.price > 20 | stats count()|{"columns": ["count()"], "rows": [[5]]}
+367|count_dedup|orders|source=orders | where items.price > 40 | stats count()|{"columns": ["count()"], "rows": [[4]]}
+368|count_dedup|orders|source=orders | where items.price > 100 | stats count()|{"columns": ["count()"], "rows": [[2]]}
+369|count_dedup|orders|source=orders | where items.qty > 2 | stats count()|{"columns": ["count()"], "rows": [[5]]}
+370|count_dedup|orders|source=orders | where items.qty > 5 | stats count()|{"columns": ["count()"], "rows": [[2]]}
+371|count_dedup|orders|source=orders | where items.qty > 10 | stats count()|{"columns": ["count()"], "rows": [[1]]}
+372|count_dedup|students|source=students | where scores.score > 60 | stats count()|{"columns": ["count()"], "rows": [[3]]}
+373|count_dedup|students|source=students | where scores.score > 80 | stats count()|{"columns": ["count()"], "rows": [[3]]}
+374|count_dedup|students|source=students | where scores.score > 90 | stats count()|{"columns": ["count()"], "rows": [[3]]}
+375|groupby_parent_with_filter|teams|source=teams | where members.hours > 30 | stats count() by team|{"columns": ["count()", "team"], "rows": [[1, "DedupTeam"], [1, "Discrim1"], [1, "Eagles"], [1, "Falcons"], [1, "Hawks"], [1, "Owls"], [1, "SortHigh"], [1, "Wolves"]]}
+376|groupby_parent_with_filter|teams|source=teams | where members.hours > 40 | stats count() by team|{"columns": ["count()", "team"], "rows": [[1, "DedupTeam"], [1, "Discrim1"], [1, "Eagles"], [1, "Hawks"], [1, "Owls"], [1, "SortHigh"], [1, "Wolves"]]}
+377|groupby_parent_with_filter|teams|source=teams | where members.rating > 5 | stats count() by team|{"columns": ["count()", "team"], "rows": [[1, "DedupTeam"], [1, "Discrim1"], [1, "Eagles"], [1, "Falcons"], [1, "Owls"], [1, "Wolves"]]}
+378|groupby_parent_with_filter|teams|source=teams | where members.rating > 8 | stats count() by team|{"columns": ["count()", "team"], "rows": [[1, "DedupTeam"], [1, "Discrim1"], [1, "Eagles"], [1, "Falcons"]]}
+379|groupby_parent_with_filter|orders|source=orders | where items.price > 40 | stats count() by order|{"columns": ["count()", "order"], "rows": [[1, "O1"], [1, "O2"], [1, "O3"], [1, "O5"]]}
+380|groupby_parent_with_filter|orders|source=orders | where items.price > 100 | stats count() by order|{"columns": ["count()", "order"], "rows": [[1, "O1"], [1, "O5"]]}
+381|groupby_parent_with_filter|orders|source=orders | where items.qty > 3 | stats count() by order|{"columns": ["count()", "order"], "rows": [[1, "O3"], [1, "O4"], [1, "O6"], [1, "O7"]]}
+382|groupby_parent_with_filter|orders|source=orders | where items.qty > 10 | stats count() by order|{"columns": ["count()", "order"], "rows": [[1, "O6"]]}
+383|groupby_parent_with_filter|students|source=students | where scores.score > 70 | stats count() by student|{"columns": ["count()", "student"], "rows": [[1, "Amy"], [1, "Cid"], [1, "Discrim"]]}
+384|groupby_parent_with_filter|students|source=students | where scores.score > 90 | stats count() by student|{"columns": ["count()", "student"], "rows": [[1, "Amy"], [1, "Cid"], [1, "Discrim"]]}
+385|sort_nested_desc|teams|source=teams | sort - members.hours | fields team, members.hours|{"columns": ["team", "members.hours"], "rows": [["SortHigh", 99], ["DedupTeam", 60], ["Eagles", 50], ["Wolves", 45], ["Discrim1", 45], ["Hawks", 42], ["Falcons", 40], ["Owls", 38], ["NegTest", 10], ["SortLow", 5]]}
+386|sort_nested_asc|teams|source=teams | sort members.hours | fields team, members.hours|{"columns": ["team", "members.hours"], "rows": [["SortLow", 5], ["NegTest", 10], ["Owls", 38], ["Falcons", 40], ["Hawks", 42], ["Wolves", 45], ["Discrim1", 45], ["Eagles", 50], ["DedupTeam", 60], ["SortHigh", 99]]}
+387|sort_nested_desc|teams|source=teams | sort - members.rating | fields team, members.rating|{"columns": ["team", "members.rating"], "rows": [["DedupTeam", 10], ["Falcons", 9], ["Wolves", 8], ["Owls", 8], ["Eagles", 7], ["Discrim1", 5], ["Hawks", 4], ["NegTest", 2], ["SortLow", 1], ["SortHigh", 1]]}
+388|sort_nested_asc|teams|source=teams | sort members.rating | fields team, members.rating|{"columns": ["team", "members.rating"], "rows": [["SortLow", 1], ["SortHigh", 1], ["NegTest", 2], ["Hawks", 4], ["Discrim1", 5], ["Eagles", 7], ["Wolves", 8], ["Owls", 8], ["Falcons", 9], ["DedupTeam", 10]]}
+389|sort_nested_desc|orders|source=orders | sort - items.qty | fields order, items.qty|{"columns": ["order", "items.qty"], "rows": [["O6", 20], ["O4", 10], ["O7", 4], ["O2", 3], ["O1", 2], ["O3", 1], ["O5", 1]]}
+390|sort_nested_asc|orders|source=orders | sort items.qty | fields order, items.qty|{"columns": ["order", "items.qty"], "rows": [["O3", 1], ["O5", 1], ["O1", 2], ["O2", 3], ["O7", 4], ["O4", 10], ["O6", 20]]}
+391|sort_nested_desc|orders|source=orders | sort - items.price | fields order, items.price|{"columns": ["order", "items.price"], "rows": [["O5", 900], ["O3", 100], ["O1", 50], ["O2", 50], ["O7", 10], ["O4", 9], ["O6", 5]]}
+392|sort_nested_asc|orders|source=orders | sort items.price | fields order, items.price|{"columns": ["order", "items.price"], "rows": [["O6", 5], ["O4", 9], ["O7", 10], ["O1", 50], ["O2", 50], ["O3", 100], ["O5", 900]]}
+393|sort_nested_desc|students|source=students | sort - scores.score | fields student, scores.score|{"columns": ["student", "scores.score"], "rows": [["Discrim", 96], ["Amy", 95], ["Cid", 90], ["Ben", 60], ["Dax", 55]]}
+394|sort_nested_asc|students|source=students | sort scores.score | fields student, scores.score|{"columns": ["student", "scores.score"], "rows": [["Dax", 55], ["Ben", 60], ["Cid", 90], ["Amy", 95], ["Discrim", 96]]}

@@ -8,7 +8,10 @@
 
 package org.opensearch.analytics.planner.dag;
 
+import org.apache.calcite.plan.RelOptUtil;
 import org.apache.calcite.rel.RelNode;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.opensearch.analytics.exec.OrdinalAppendingSink;
 import org.opensearch.analytics.planner.CapabilityRegistry;
 import org.opensearch.analytics.planner.CapabilityResolutionUtils;
@@ -48,6 +51,8 @@ import java.util.UUID;
  */
 public class DAGBuilder {
 
+    private static final Logger LOGGER = LogManager.getLogger(DAGBuilder.class);
+
     private DAGBuilder() {}
 
     public static QueryDAG build(
@@ -56,6 +61,13 @@ public class DAGBuilder {
         ClusterService clusterService,
         IndexNameExpressionResolver indexNameExpressionResolver
     ) {
+        LOGGER.info("[TRACE-STEP] DAGBuilder.build: START. cboOutput (root of post-CBO tree) =\n{}", RelOptUtil.toString(cboOutput));
+        LOGGER.info(
+            "[TRACE-STEP] DAGBuilder.build: root node class={}, is ExchangeReducer={}, is LateMaterialization={} -> deciding which cut path to take",
+            cboOutput.getClass().getSimpleName(),
+            cboOutput instanceof OpenSearchExchangeReducer,
+            cboOutput instanceof OpenSearchLateMaterialization
+        );
         int[] counter = { 0 };
         List<Stage> childStages = new ArrayList<>();
 
@@ -64,17 +76,32 @@ public class DAGBuilder {
             // Root IS an ExchangeReducer — pure gather (no compute above the exchange).
             // Cut directly: child stage is the subtree below, root fragment is
             // ExchangeReducer → StageInputScan.
+            LOGGER.info("[TRACE-STEP] DAGBuilder.build: root is ExchangeReducer -> cutAtExchange (multi-shard gather at root)");
             rootFragment = cutAtExchange(reducer, counter, childStages, registry, clusterService, indexNameExpressionResolver);
         } else if (cboOutput instanceof OpenSearchLateMaterialization lm) {
             // LM at root, no above-ops (e.g. `source = t | where ... | sort col | head N`):
             // promote the LM stage to rootStage and skip the synthetic post-LM stage that would
             // wrap a bare StageInputScan placeholder.
+            LOGGER.info("[TRACE-STEP] DAGBuilder.build: root is LateMaterialization -> cutAtLateMaterialization, LM stage promoted to root");
             cutAtLateMaterialization(lm, counter, childStages, registry, clusterService, indexNameExpressionResolver);
             assert childStages.size() == 1 : "cutAtLateMaterialization must add exactly one child (the LM stage)";
-            return new QueryDAG(newQueryId(), childStages.getFirst());
+            QueryDAG lmDag = new QueryDAG(newQueryId(), childStages.getFirst());
+            LOGGER.info("[TRACE-STEP] DAGBuilder.build: DONE (LM-root path). QueryDAG=\n{}", lmDag);
+            return lmDag;
         } else {
+            // No exchange, no LM at root — this is our example: single-shard, no QTF. The
+            // ENTIRE plan (Project/Filter/TableScan) becomes ONE fragment via a plain recursive
+            // walk (sever), with zero child stages, since there is no exchange boundary to cut at.
+            LOGGER.info(
+                "[TRACE-STEP] DAGBuilder.build: root is neither ExchangeReducer nor LateMaterialization -> sever() the whole tree into ONE fragment, no child stages expected (single-shard/no-exchange plan)"
+            );
             rootFragment = sever(cboOutput, counter, childStages, registry, clusterService, indexNameExpressionResolver);
         }
+        LOGGER.info(
+            "[TRACE-STEP] DAGBuilder.build: after cut, rootFragment (this stage's Substrait-bound subtree) =\n{}\n  childStages count={}",
+            RelOptUtil.toString(rootFragment),
+            childStages.size()
+        );
 
         // Sink provider is needed whenever the root stage runs a backend plan locally —
         // either because it gathers child output (COORDINATOR_REDUCE) or because it's a
@@ -100,7 +127,14 @@ public class DAGBuilder {
             : null;
 
         Stage rootStage = new Stage(counter[0]++, rootFragment, childStages, null, sinkProvider, rootTargetResolver);
-        return new QueryDAG(newQueryId(), rootStage);
+        QueryDAG dag = new QueryDAG(newQueryId(), rootStage);
+        LOGGER.info(
+            "[TRACE-STEP] DAGBuilder.build: DONE. needsShardResolver={} (single-shard root reads directly off the TableScan's shard target), sinkProvider={}, QueryDAG=\n{}",
+            needsShardResolver,
+            sinkProvider != null,
+            dag
+        );
+        return dag;
     }
 
     /**

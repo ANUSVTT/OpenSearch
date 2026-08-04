@@ -1,0 +1,91 @@
+{
+  "teams": [
+    {"team": "Falcons", "budget": 500, "active": "yes", "members": [
+      {"name": "Ann", "role": "lead", "hours": 40, "rating": 9},
+      {"name": "Bo", "role": "dev", "hours": 35, "rating": 6}
+    ]},
+    {"team": "Wolves", "budget": 300, "active": "yes", "members": [
+      {"name": "Cy", "role": "dev", "hours": 45, "rating": 8}
+    ]},
+    {"team": "Eagles", "budget": 700, "active": "no", "members": [
+      {"name": "Dee", "role": "lead", "hours": 50, "rating": 7},
+      {"name": "Eli", "role": "dev", "hours": 20, "rating": 5},
+      {"name": "Fay", "role": "dev", "hours": 30, "rating": 9}
+    ]},
+    {"team": "Hawks", "budget": 200, "active": "yes", "members": [
+      {"name": "Gus", "role": "lead", "hours": 42, "rating": 4}
+    ]},
+    {"team": "Owls", "budget": 450, "active": "no", "members": [
+      {"name": "Hana", "role": "dev", "hours": 38, "rating": 8},
+      {"name": "Ivy", "role": "lead", "hours": 41, "rating": 8}
+    ]},
+    {"team": "Discrim1", "budget": 100, "active": "yes", "members": [
+      {"name": "X", "role": "dev", "hours": 45, "rating": 5},
+      {"name": "Y", "role": "dev", "hours": 30, "rating": 9}
+    ]},
+    {"team": "SortLow", "budget": 150, "active": "yes", "members": [
+      {"name": "Zed", "role": "dev", "hours": 5, "rating": 1}
+    ]},
+    {"team": "SortHigh", "budget": 150, "active": "yes", "members": [
+      {"name": "Yul", "role": "dev", "hours": 99, "rating": 1}
+    ]},
+    {"team": "DedupTeam", "budget": 999, "active": "yes", "members": [
+      {"name": "Mo", "role": "dev", "hours": 60, "rating": 10},
+      {"name": "No", "role": "dev", "hours": 70, "rating": 10}
+    ]},
+    {"team": "NegTest", "budget": 250, "active": "yes", "members": [
+      {"name": "P", "role": "dev", "hours": 10, "rating": 2},
+      {"name": "Q", "role": "dev", "hours": 12, "rating": 3}
+    ]}
+  ],
+  "orders": [
+    {"order": "O1", "customer": "Al", "total": 300, "items": [
+      {"product": "Widget", "qty": 2, "price": 50, "category": "tools"},
+      {"product": "Gadget", "qty": 1, "price": 200, "category": "elec"}
+    ]},
+    {"order": "O2", "customer": "Bev", "total": 150, "items": [
+      {"product": "Gizmo", "qty": 3, "price": 50, "category": "elec"}
+    ]},
+    {"order": "O3", "customer": "Cy", "total": 600, "items": [
+      {"product": "Widget", "qty": 1, "price": 100, "category": "tools"},
+      {"product": "Sprocket", "qty": 5, "price": 100, "category": "tools"}
+    ]},
+    {"order": "O4", "customer": "Al", "total": 90, "items": [
+      {"product": "Bolt", "qty": 10, "price": 9, "category": "hardware"}
+    ]},
+    {"order": "O5", "customer": "Dee", "total": 1000, "items": [
+      {"product": "Server", "qty": 1, "price": 900, "category": "elec"},
+      {"product": "Cable", "qty": 2, "price": 50, "category": "elec"}
+    ]},
+    {"order": "O6", "customer": "Ez", "total": 80, "items": [
+      {"product": "ItemA", "qty": 20, "price": 5, "category": "x"},
+      {"product": "ItemB", "qty": 2, "price": 30, "category": "x"}
+    ]},
+    {"order": "O7", "customer": "Fi", "total": 40, "items": [
+      {"product": "ItemC", "qty": 4, "price": 10, "category": "y"},
+      {"product": "ItemD", "qty": 5, "price": 11, "category": "y"}
+    ]}
+  ],
+  "students": [
+    {"student": "Amy", "grade_level": 9, "honors": "yes", "scores": [
+      {"subject": "Math", "score": 95, "term": "fall"},
+      {"subject": "Sci", "score": 88, "term": "fall"}
+    ]},
+    {"student": "Ben", "grade_level": 9, "honors": "no", "scores": [
+      {"subject": "Math", "score": 60, "term": "fall"}
+    ]},
+    {"student": "Cid", "grade_level": 10, "honors": "yes", "scores": [
+      {"subject": "Math", "score": 90, "term": "fall"},
+      {"subject": "Sci", "score": 92, "term": "spring"},
+      {"subject": "Art", "score": 70, "term": "fall"}
+    ]},
+    {"student": "Dax", "grade_level": 10, "honors": "no", "scores": [
+      {"subject": "Math", "score": 55, "term": "fall"},
+      {"subject": "Sci", "score": 58, "term": "fall"}
+    ]},
+    {"student": "Discrim", "grade_level": 11, "honors": "yes", "scores": [
+      {"subject": "Math", "score": 96, "term": "fall"},
+      {"subject": "Sci", "score": 60, "term": "spring"}
+    ]}
+  ]
+}

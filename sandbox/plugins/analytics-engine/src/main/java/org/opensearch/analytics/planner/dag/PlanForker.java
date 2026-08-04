@@ -9,6 +9,8 @@
 package org.opensearch.analytics.planner.dag;
 
 import org.apache.calcite.rel.RelNode;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.opensearch.analytics.planner.CapabilityRegistry;
 import org.opensearch.analytics.planner.rel.OpenSearchRelNode;
 import org.opensearch.analytics.planner.rel.OperatorAnnotation;
@@ -34,10 +36,18 @@ import java.util.List;
  */
 public class PlanForker {
 
+    private static final Logger LOGGER = LogManager.getLogger(PlanForker.class);
+
     private PlanForker() {}
 
     public static void forkAll(QueryDAG dag, CapabilityRegistry registry) {
+        LOGGER.info("[TRACE-STEP] PlanForker.forkAll: START, rootStage id={}", dag.rootStage().getStageId());
         forkStage(dag.rootStage(), registry);
+        LOGGER.info(
+            "[TRACE-STEP] PlanForker.forkAll: DONE. rootStage now has {} plan alternative(s): {}",
+            dag.rootStage().getPlanAlternatives().size(),
+            dag.rootStage().getPlanAlternatives().stream().map(StagePlan::backendId).toList()
+        );
     }
 
     private static void forkStage(Stage stage, CapabilityRegistry registry) {
@@ -161,14 +171,30 @@ public class PlanForker {
     ) {
         List<OperatorAnnotation> resolved = new ArrayList<>();
         for (OperatorAnnotation annotation : annotations) {
+            OperatorAnnotation narrowed;
+            String narrowedTo;
             if (annotation.getViableBackends().contains(targetBackend)) {
-                resolved.add(annotation.narrowTo(targetBackend));
+                narrowedTo = targetBackend;
+                narrowed = annotation.narrowTo(targetBackend);
             } else if (annotation.getViableBackends().contains(operatorBackend)) {
-                resolved.add(annotation.narrowTo(operatorBackend));
+                narrowedTo = operatorBackend;
+                narrowed = annotation.narrowTo(operatorBackend);
             } else {
                 // Fallback: narrow to first viable backend.
-                resolved.add(annotation.narrowTo(annotation.getViableBackends().getFirst()));
+                narrowedTo = annotation.getViableBackends().getFirst();
+                narrowed = annotation.narrowTo(narrowedTo);
             }
+            resolved.add(narrowed);
+            List<String> peers = (narrowed instanceof org.opensearch.analytics.planner.rel.AnnotatedPredicate ap)
+                ? ap.getPerformanceDelegationBackends()
+                : List.of();
+            LOGGER.info(
+                "[TRACE-STEP] PlanForker.resolveAnnotationsToTarget: annotation id={} viableBackends={} -> narrowTo({}) => performanceDelegationBackends={}",
+                annotation.getAnnotationId(),
+                annotation.getViableBackends(),
+                narrowedTo,
+                peers
+            );
         }
         return resolved;
     }

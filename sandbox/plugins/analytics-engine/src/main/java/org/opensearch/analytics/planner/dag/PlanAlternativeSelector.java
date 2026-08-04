@@ -8,6 +8,8 @@
 
 package org.opensearch.analytics.planner.dag;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.opensearch.analytics.planner.CapabilityRegistry;
 import org.opensearch.analytics.spi.AnalyticsSearchBackendPlugin;
 import org.opensearch.analytics.spi.BackendShardPreference;
@@ -39,6 +41,8 @@ import java.util.List;
  */
 public final class PlanAlternativeSelector {
 
+    private static final Logger LOGGER = LogManager.getLogger(PlanAlternativeSelector.class);
+
     private PlanAlternativeSelector() {}
 
     /**
@@ -50,15 +54,28 @@ public final class PlanAlternativeSelector {
      *                             passed through to backend scoring functions.
      */
     public static void selectAll(QueryDAG dag, CapabilityRegistry registry, boolean preferMetadataDriver) {
-        if (preferMetadataDriver == false) return;
+        LOGGER.info("[TRACE-STEP] PlanAlternativeSelector.selectAll: START. preferMetadataDriver={}", preferMetadataDriver);
+        if (preferMetadataDriver == false) {
+            LOGGER.info("[TRACE-STEP] PlanAlternativeSelector.selectAll: preferMetadataDriver=false -> gate closed, skipping entirely (no stage inspected)");
+            return;
+        }
         selectStage(dag.rootStage(), registry, new ShardPreferenceContext(preferMetadataDriver));
+        LOGGER.info("[TRACE-STEP] PlanAlternativeSelector.selectAll: DONE");
     }
 
     private static void selectStage(Stage stage, CapabilityRegistry registry, ShardPreferenceContext ctx) {
         for (Stage child : stage.getChildStages()) {
             selectStage(child, registry, ctx);
         }
-        if (stage.getPlanAlternatives().size() < 2) return;
+        LOGGER.info(
+            "[TRACE-STEP] selectStage(stageId={}): {} plan alternative(s) present",
+            stage.getStageId(),
+            stage.getPlanAlternatives().size()
+        );
+        if (stage.getPlanAlternatives().size() < 2) {
+            LOGGER.info("[TRACE-STEP] selectStage(stageId={}): fewer than 2 alternatives -> nothing to choose between, skipping", stage.getStageId());
+            return;
+        }
 
         // Pick the highest-scoring alternative. Backends without a preference score 0;
         // a positive score wins. Ties go to the first plan in PlanForker order.

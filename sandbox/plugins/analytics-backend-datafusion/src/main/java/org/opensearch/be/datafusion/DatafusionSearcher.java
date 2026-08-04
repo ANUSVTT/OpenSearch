@@ -8,6 +8,8 @@
 
 package org.opensearch.be.datafusion;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.opensearch.be.datafusion.nativelib.NativeBridge;
 import org.opensearch.be.datafusion.nativelib.ReaderHandle;
 import org.opensearch.be.datafusion.nativelib.SessionContextHandle;
@@ -34,6 +36,8 @@ import java.util.concurrent.CompletableFuture;
 @ExperimentalApi
 public class DatafusionSearcher implements EngineSearcher<DatafusionContext> {
 
+    private static final Logger LOGGER = LogManager.getLogger(DatafusionSearcher.class);
+
     private final ReaderHandle readerHandle;
 
     /**
@@ -58,14 +62,21 @@ public class DatafusionSearcher implements EngineSearcher<DatafusionContext> {
         DatafusionQuery query = context.getDatafusionQuery();
         NativeRuntimeHandle runtimeHandle = context.getNativeRuntime();
         CompletableFuture<Long> future = new CompletableFuture<>();
+        LOGGER.info(
+            "[TRACE-STEP] searchWithSessionContext: FFM CALL -> NativeBridge.executeWithContextAsync, substraitBytes={}B, contextId={} (Java -> Rust boundary; Rust decodes Substrait, and for any delegation_possible(...) node may call back into Lucene's FilterDelegationHandle before this future resolves)",
+            query.getSubstraitBytes() == null ? 0 : query.getSubstraitBytes().length,
+            query.getContextId()
+        );
         NativeBridge.executeWithContextAsync(sessionCtx, query.getSubstraitBytes(), new ActionListener<>() {
             @Override
             public void onResponse(Long streamPtr) {
+                LOGGER.info("[TRACE-STEP] searchWithSessionContext: FFM CALL RETURNED (onResponse) streamPtr={} -> native scan/filter execution done, result stream ready", streamPtr);
                 future.complete(streamPtr);
             }
 
             @Override
             public void onFailure(Exception exception) {
+                LOGGER.info("[TRACE-STEP] searchWithSessionContext: FFM CALL FAILED (onFailure) {}", exception.toString());
                 future.completeExceptionally(exception);
             }
         });

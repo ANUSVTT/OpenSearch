@@ -9,6 +9,8 @@
 package org.opensearch.analytics.exec.stage.shard;
 
 import org.apache.arrow.vector.VectorSchemaRoot;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.opensearch.analytics.backend.ExchangeSource;
 import org.opensearch.analytics.exec.AnalyticsSearchTransportService;
 import org.opensearch.analytics.exec.QueryContext;
@@ -39,6 +41,8 @@ import java.util.function.Function;
  * @opensearch.internal
  */
 public class ShardFragmentStageExecution extends AbstractStageExecution implements DataProducer {
+
+    private static final Logger LOGGER = LogManager.getLogger(ShardFragmentStageExecution.class);
 
     private final QueryContext config;
     private final ExchangeSink outputSink;
@@ -140,6 +144,12 @@ public class ShardFragmentStageExecution extends AbstractStageExecution implemen
                     if (isLast) listener.onResponse(null);
                     return true;
                 }
+                LOGGER.info(
+                    "[TRACE-STEP] responseListenerFor: coordinator RECEIVED batch from shard task={} rows={} isLast={} -> final answer for this row-group/stream, flowing into outputSink (data-node -> coordinator hop lands here)",
+                    task.id(),
+                    vsr.getRowCount(),
+                    isLast
+                );
                 try {
                     outputSink.feed(vsr, sourceOrdinal);
                 } catch (Exception e) {

@@ -121,6 +121,11 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
                     query.getClass().getSimpleName(),
                     query
                 );
+                LOGGER.info(
+                    "[TRACE-STEP] Lucene RECEIVED delegated expression annotationId={} (deserialized from bytes shipped by the coordinator) -> compiled to runnable Lucene Query [{}], ready and waiting for DataFusion's FFM call",
+                    expr.getAnnotationId(),
+                    query
+                );
                 queries.put(expr.getAnnotationId(), query);
             } catch (IOException exception) {
                 throw new IllegalStateException(
@@ -331,6 +336,13 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
         long[] words = bits.getBits();
         int wordCount = (span + 63) >>> 6;
         MemorySegment.copy(words, 0, out, ValueLayout.JAVA_LONG, 0, wordCount);
+        LOGGER.info(
+            "[TRACE-STEP] Lucene RETURNED bitset for collectorKey={}: cardinality={} matching rows out of rowWindow=[{},{}) -> copied into the MemorySegment `out`, this is the FFM return path back into Rust, where DataFusion will AND/intersect this with its own page-pruning and other predicates",
+            collectorKey,
+            bits.cardinality(),
+            minDoc,
+            maxDoc
+        );
         return wordCount;
     }
 

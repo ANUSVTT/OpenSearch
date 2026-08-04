@@ -71,7 +71,12 @@ public class DatafusionSearchExecEngine implements SearchExecEngine<ShardScanExe
         }
 
         DatafusionSearcher searcher = datafusionContext.getSearcher();
+        LOGGER.info(
+            "[TRACE-STEP] execute(): calling DatafusionSearcher.search() contextId={} -> this crosses the FFM boundary into native Rust DataFusion, which decodes the Substrait bytes and may call back into Lucene per row-group",
+            contextId
+        );
         searcher.search(datafusionContext);
+        LOGGER.info("[TRACE-STEP] execute(): DatafusionSearcher.search() returned (native scan/filter execution complete or streaming started) contextId={}", contextId);
         StreamHandle handle = datafusionContext.takeStreamHandle();
         return new DatafusionResultStream(handle, allocator);
     }

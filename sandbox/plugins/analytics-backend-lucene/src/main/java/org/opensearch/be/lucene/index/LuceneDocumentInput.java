@@ -20,6 +20,7 @@ import org.opensearch.be.lucene.LucenePlugin;
 import org.opensearch.common.annotation.ExperimentalApi;
 import org.opensearch.index.engine.dataformat.DocumentInput;
 import org.opensearch.index.engine.dataformat.FieldTypeCapabilities;
+import org.opensearch.index.engine.exec.PrimaryTermFieldType;
 import org.opensearch.index.mapper.MappedFieldType;
 
 import java.util.ArrayDeque;
@@ -155,7 +156,13 @@ public class LuceneDocumentInput implements DocumentInput<Document> {
     @Override
     public void addField(MappedFieldType fieldType, Object value) {
         Set<FieldTypeCapabilities.Capability> capabilities = fieldType.getCapabilityMap().getOrDefault(LucenePlugin.DATA_FORMAT, Set.of());
-        if (capabilities.isEmpty()) {
+        // PrimaryTermFieldType.INSTANCE is a synthetic singleton (see DataFormatAwareEngine) that
+        // never goes through DataFormatPlugin.assignCapabilities(), so its capability map is always
+        // empty — without this bypass every doc written to the Lucene secondary format would
+        // silently lack _primary_term, and NestedQueryBuilder's parent filter (FieldExistsQuery on
+        // _primary_term, see Queries.newNonNestedFilter()) would then match zero docs. Mirrors the
+        // same bypass in ParquetDocumentInput.addField.
+        if (capabilities.isEmpty() && fieldType != PrimaryTermFieldType.INSTANCE) {
             // nothing to support on this format for this field.
             return;
         }

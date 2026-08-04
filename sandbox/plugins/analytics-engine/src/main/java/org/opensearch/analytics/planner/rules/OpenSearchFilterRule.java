@@ -97,6 +97,12 @@ public class OpenSearchFilterRule extends RelOptRule {
         }
 
         LOGGER.debug("Filter viable backends: {} (child viable: {})", viableBackends, childViableBackends);
+        LOGGER.info(
+            "[TRACE-STEP] mark(OpenSearchFilterRule): operator-level viableBackends={} (childViableBackends={}), annotatedCondition=`{}`",
+            viableBackends,
+            childViableBackends,
+            annotatedCondition
+        );
 
         call.transformTo(
             new OpenSearchFilter(
@@ -136,7 +142,14 @@ public class OpenSearchFilterRule extends RelOptRule {
         // every declared FilterCapability has a matching serializer registered, and reject
         // the plugin otherwise — fail-fast at boot rather than at first dual-viable query.
         // Needs revisiting.
-        return new AnnotatedPredicate(rexCall.getType(), rexCall, viableBackends, context.nextAnnotationId());
+        int leafAnnotationId = context.nextAnnotationId();
+        LOGGER.info(
+            "[TRACE-STEP] mark(OpenSearchFilterRule): leaf predicate id={} `{}` -> viableBackends={}",
+            leafAnnotationId,
+            rexCall,
+            viableBackends
+        );
+        return new AnnotatedPredicate(rexCall.getType(), rexCall, viableBackends, leafAnnotationId);
     }
 
     /**

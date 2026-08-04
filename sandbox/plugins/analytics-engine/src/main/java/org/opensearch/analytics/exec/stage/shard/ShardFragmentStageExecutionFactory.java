@@ -8,6 +8,8 @@
 
 package org.opensearch.analytics.exec.stage.shard;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.opensearch.analytics.exec.AnalyticsSearchTransportService;
 import org.opensearch.analytics.exec.QueryContext;
 import org.opensearch.analytics.exec.action.FragmentExecutionRequest;
@@ -37,6 +39,8 @@ import java.util.function.Function;
  * @opensearch.internal
  */
 public final class ShardFragmentStageExecutionFactory implements StageExecutionFactory {
+
+    private static final Logger LOGGER = LogManager.getLogger(ShardFragmentStageExecutionFactory.class);
 
     private final ClusterService clusterService;
     private final AnalyticsSearchTransportService transport;
@@ -74,6 +78,13 @@ public final class ShardFragmentStageExecutionFactory implements StageExecutionF
         List<FragmentExecutionRequest.PlanAlternative> alternatives = new ArrayList<>();
         for (StagePlan plan : stage.getPlanAlternatives()) {
             DelegationDescriptor delegationDescriptor = buildDelegationDescriptor(plan);
+            LOGGER.info(
+                "[TRACE-STEP] buildPlanAlternatives(stageId={}): backend=[{}] convertedBytes={}B delegatedExpressions={} -> packed into FragmentExecutionRequest.PlanAlternative (about to cross the wire to the shard)",
+                stage.getStageId(),
+                plan.backendId(),
+                plan.convertedBytes() == null ? 0 : plan.convertedBytes().length,
+                plan.delegatedExpressions().size()
+            );
             alternatives.add(
                 new FragmentExecutionRequest.PlanAlternative(
                     plan.backendId(),
@@ -93,6 +104,12 @@ public final class ShardFragmentStageExecutionFactory implements StageExecutionF
         // Extract treeShape and count from the ShardScanWithDelegationInstructionNode
         for (InstructionNode node : plan.instructions()) {
             if (node instanceof ShardScanWithDelegationInstructionNode delegationNode) {
+                LOGGER.info(
+                    "[TRACE-STEP] buildDelegationDescriptor: treeShape={} delegatedPredicateCount={} annotationIds={} -> DelegationDescriptor built, will ride alongside the Substrait bytes to the shard",
+                    delegationNode.getTreeShape(),
+                    delegationNode.getDelegatedPredicateCount(),
+                    plan.delegatedExpressions().stream().map(d -> String.valueOf(d.getAnnotationId())).toList()
+                );
                 return new DelegationDescriptor(
                     delegationNode.getTreeShape(),
                     delegationNode.getDelegatedPredicateCount(),

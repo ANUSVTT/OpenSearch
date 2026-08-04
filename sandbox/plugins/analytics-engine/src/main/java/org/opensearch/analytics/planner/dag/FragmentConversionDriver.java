@@ -81,6 +81,7 @@ public class FragmentConversionDriver {
      * {@link StagePlan#convertedBytes()} on each plan.
      */
     public static void convertAll(QueryDAG dag, CapabilityRegistry registry) {
+        LOGGER.info("[TRACE-STEP] FragmentConversionDriver.convertAll: START. QueryDAG=\n{}", dag);
         convertStage(dag.rootStage(), registry);
         // Root stage executes locally at coordinator — store factory for instruction dispatch.
         Stage root = dag.rootStage();
@@ -88,9 +89,18 @@ public class FragmentConversionDriver {
             AnalyticsSearchBackendPlugin backend = registry.getBackend(root.getPlanAlternatives().getFirst().backendId());
             root.setInstructionHandlerFactory(backend.getInstructionHandlerFactory());
         }
+        LOGGER.info(
+            "[TRACE-STEP] FragmentConversionDriver.convertAll: DONE. rootStage now has {} converted plan alternative(s) with convertedBytes populated.",
+            root.getPlanAlternatives().size()
+        );
     }
 
     private static void convertStage(Stage stage, CapabilityRegistry registry) {
+        LOGGER.info(
+            "[TRACE-STEP] convertStage(stageId={}): START. {} child stage(s) to convert first (recursion: children before this stage, since the parent's Substrait plan needs to reference child stage outputs by id).",
+            stage.getStageId(),
+            stage.getChildStages().size()
+        );
         for (Stage child : stage.getChildStages()) {
             convertStage(child, registry);
         }
@@ -102,13 +112,25 @@ public class FragmentConversionDriver {
         // stub Read carrying the wrapper's output schema so Stage 3's parent reduce sink
         // can derive the partition schema via the standard producerPlanBytes path.
         if (stage.getExecutionType() == StageExecutionType.LATE_MATERIALIZATION) {
+            LOGGER.info("[TRACE-STEP] convertStage(stageId={}): executionType=LATE_MATERIALIZATION -> convertLateMaterializationStage (no Substrait compute, Java-only scatter/gather stub)", stage.getStageId());
             convertLateMaterializationStage(stage, registry);
             return;
         }
+        LOGGER.info(
+            "[TRACE-STEP] convertStage(stageId={}): {} plan alternative(s) to convert (one per candidate backend before PlanAlternativeSelector narrows to the final choice)",
+            stage.getStageId(),
+            stage.getPlanAlternatives().size()
+        );
         List<StagePlan> converted = new ArrayList<>(stage.getPlanAlternatives().size());
         for (StagePlan plan : stage.getPlanAlternatives()) {
             AnalyticsSearchBackendPlugin backend = registry.getBackend(plan.backendId());
             FragmentConvertor convertor = backend.getFragmentConvertor();
+            LOGGER.info(
+                "[TRACE-STEP] convertStage(stageId={}): converting plan alternative for backend=[{}]. resolvedFragment (this alternative's RelNode, annotations still attached) =\n{}",
+                stage.getStageId(),
+                plan.backendId(),
+                org.apache.calcite.plan.RelOptUtil.toString(plan.resolvedFragment())
+            );
 
             // Derive filter tree shape BEFORE stripping (annotations must be intact). The deriver
             // mirrors the combiner's post-combine shape so the data node's classification matches
@@ -437,6 +459,10 @@ public class FragmentConversionDriver {
      */
     static byte[] convert(RelNode resolvedFragment, FragmentConvertor convertor, IntraOperatorDelegationBytes delegationBytes) {
         RelNode leaf = findLeaf(resolvedFragment);
+        LOGGER.info(
+            "[TRACE-STEP] convert(): leaf node of this fragment = {} -> dispatching by leaf type (TableScan=shard-local single fragment; StageInputScan=reduce fragment over a child stage's gathered output; Values=coord-only literal source)",
+            leaf.getClass().getSimpleName()
+        );
 
         if (leaf instanceof OpenSearchTableScan) {
             // Identify the PARTIAL aggregate — either at the top of the fragment or buried
@@ -474,6 +500,11 @@ public class FragmentConversionDriver {
             }
 
             RelNode stripped = strip(resolvedFragment, delegationBytes);
+            LOGGER.info(
+                "[TRACE-STEP] convert(): plain TableScan-leaf path. BEFORE strip() (AnnotatedPredicates/ANNOTATED_PROJECT_EXPR still present):\n{}\nAFTER strip() (annotations replaced by their raw predicate OR a delegation_possible(...)/DelegatedPredicateFunction placeholder — this stripped tree is what convertor.convertFragment() actually turns into Substrait bytes):\n{}",
+                org.apache.calcite.plan.RelOptUtil.toString(resolvedFragment),
+                org.apache.calcite.plan.RelOptUtil.toString(stripped)
+            );
             return convertor.convertFragment(stripped);
         }
 

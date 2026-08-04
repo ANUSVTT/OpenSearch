@@ -8,6 +8,8 @@
 
 package org.opensearch.analytics.exec.stage.shard;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.opensearch.analytics.exec.AnalyticsSearchTransportService;
 import org.opensearch.analytics.exec.PendingExecutions;
 import org.opensearch.analytics.exec.QueryContext;
@@ -28,6 +30,8 @@ import java.util.function.Function;
  * @opensearch.internal
  */
 public final class ShardTaskRunner implements TaskRunner<ShardStageTask> {
+
+    private static final Logger LOGGER = LogManager.getLogger(ShardTaskRunner.class);
 
     private final ShardFragmentStageExecution stage;
     private final QueryContext config;
@@ -52,6 +56,14 @@ public final class ShardTaskRunner implements TaskRunner<ShardStageTask> {
         ShardExecutionTarget target = (ShardExecutionTarget) task.target();
         FragmentExecutionRequest request = requestBuilder.apply(target);
         PendingExecutions pending = pendingFor(target);
+        LOGGER.info(
+            "[TRACE-STEP] ShardTaskRunner.run: DISPATCHING FragmentExecutionRequest queryId={} stageId={} shard={} targetNode={} planAlternatives={} -> transport.dispatchFragmentStreaming (coordinator -> data-node hop starts here)",
+            request.getQueryId(),
+            request.getStageId(),
+            target.shardId(),
+            target.node().getId(),
+            request.getPlanAlternatives().size()
+        );
         transport.dispatchFragmentStreaming(
             request,
             target.node(),

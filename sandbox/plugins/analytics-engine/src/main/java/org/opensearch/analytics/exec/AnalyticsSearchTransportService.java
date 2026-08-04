@@ -11,6 +11,8 @@ package org.opensearch.analytics.exec;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.types.pojo.Schema;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.opensearch.analytics.backend.EngineResultBatch;
 import org.opensearch.analytics.exec.action.FetchByRowIdsAction;
 import org.opensearch.analytics.exec.action.FetchByRowIdsRequest;
@@ -55,6 +57,8 @@ import java.io.IOException;
 @Singleton
 public class AnalyticsSearchTransportService {
 
+    private static final Logger LOGGER = LogManager.getLogger(AnalyticsSearchTransportService.class);
+
     private final StreamTransportService transportService;
     private final ClusterService clusterService;
 
@@ -94,6 +98,13 @@ public class AnalyticsSearchTransportService {
             AdmissionControlActionType.SEARCH,
             FragmentExecutionRequest::new,
             (request, channel, task) -> {
+                LOGGER.info(
+                    "[TRACE-STEP] Data node RECEIVED FragmentExecutionRequest queryId={} stageId={} shardId={} planAlternatives={} -> executeFragmentStreamingAsync (coordinator -> data-node hop lands here)",
+                    request.getQueryId(),
+                    request.getStageId(),
+                    request.getShardId(),
+                    request.getPlanAlternatives().size()
+                );
                 IndexShard shard = indicesService.indexServiceSafe(request.getShardId().getIndex()).getShard(request.getShardId().id());
                 searchService.executeFragmentStreamingAsync(
                     request,

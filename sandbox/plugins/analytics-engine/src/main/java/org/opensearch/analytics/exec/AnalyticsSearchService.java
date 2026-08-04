@@ -457,7 +457,14 @@ public class AnalyticsSearchService implements AutoCloseable {
 
                 String acceptingBackendId = delegation.delegatedExpressions().getFirst().getAcceptingBackendId();
                 AnalyticsSearchBackendPlugin acceptingBackend = backends.get(acceptingBackendId);
+                LOGGER.info(
+                    "[TRACE-STEP] startFragment: DelegationDescriptor present (treeShape={}, {} expression(s), acceptingBackend=[{}]) -> requesting FilterDelegationHandle BEFORE the driving engine starts scanning",
+                    delegation.treeShape(),
+                    delegation.delegatedExpressions().size(),
+                    acceptingBackendId
+                );
                 FilterDelegationHandle handle = acceptingBackend.getFilterDelegationHandle(delegation.delegatedExpressions(), ctx);
+                LOGGER.info("[TRACE-STEP] startFragment: FilterDelegationHandle built for backend=[{}] -> registering for FFM callback dispatch (contextId={})", acceptingBackendId, contextId);
 
                 // Build a thread tracker when task resource tracking is available.
                 DelegationThreadTracker tracker = null;
@@ -486,6 +493,11 @@ public class AnalyticsSearchService implements AutoCloseable {
             }
 
             engine = backend.getSearchExecEngineProvider().createSearchExecEngine(ctx, backendContext);
+            LOGGER.info(
+                "[TRACE-STEP] startFragment: driving engine=[{}] created (backend=[{}]) -> calling engine.execute() (this is where the driving engine starts scanning and may consult the delegation handle above per row-group)",
+                engine.getClass().getSimpleName(),
+                resolved.plan.getBackendId()
+            );
             stream = engine.execute(ctx);
             return new FragmentResources(readerContextStore, readerContext, engine, stream, trackerCleanup, requiresTopDocs);
         } catch (Exception e) {
