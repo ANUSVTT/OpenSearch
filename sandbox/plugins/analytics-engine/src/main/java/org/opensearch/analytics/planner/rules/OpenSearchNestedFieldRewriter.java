@@ -82,6 +82,33 @@ public final class OpenSearchNestedFieldRewriter {
     private static final Logger LOGGER = LogManager.getLogger(OpenSearchNestedFieldRewriter.class);
 
     /**
+     * Kill-switch for independent per-conjunct backend routing on a multi-conjunct same-array nested
+     * filter (e.g. {@code comments.author='frank' AND comments.score<50}). Default {@code false}.
+     *
+     * <p><b>This is a deliberate, accepted correctness gap, not a safe default.</b> When enabled, each
+     * array-referencing conjunct is rewritten and marked independently — a keyword-equality conjunct
+     * becomes its own dual-viable {@code NESTED_ANY_MATCH} leaf (Lucene-delegable), any other conjunct
+     * becomes its own single-conjunct {@code NESTED_ANY_MATCH_EXPR} leaf (DataFusion-only) — exactly
+     * mirroring how independent flat-column conjuncts (e.g. {@code title=/views>}) are already marked
+     * and routed. This intentionally DROPS the joint-per-element guarantee this class otherwise
+     * enforces everywhere else: vanilla nested semantics require ONE array element to satisfy every
+     * conjunct together, but independently-annotated leaves get independently evaluated and ANDed at
+     * the row level, so a row where DIFFERENT elements each satisfy a different conjunct is wrongly
+     * included (e.g. {@code comments=[{frank,90},{carol,5}]} wrongly matches {@code author='frank' AND
+     * score<50} — carol's low score, not frank's, satisfies the second conjunct). Requested explicitly
+     * to unblock incremental "does this reach the right backend" plumbing work ahead of a real fix
+     * (fusing same-array conjuncts into one combined Lucene query, tracked separately) — do not enable
+     * by default and do not remove this javadoc's warning when touching this flag.
+     *
+     * <p>Read fresh each call (not cached) so it can be toggled per-run without rebuilding.
+     */
+    public static final String INDEPENDENT_CONJUNCT_ROUTING_PROPERTY = "opensearch.analytics.nested.independent_conjunct_routing";
+
+    private static boolean independentConjunctRoutingEnabled() {
+        return Boolean.parseBoolean(System.getProperty(INDEPENDENT_CONJUNCT_ROUTING_PROPERTY, "false"));
+    }
+
+    /**
      * Synthetic scalar function: {@code nested_any_match(arrayCol, 'fieldName', 'op', literal) → BOOLEAN}.
      * Emitted by the filter rewrite in place of Correlate+Uncollect. The Substrait emission maps this
      * to a scalar function call "nested_any_match"; on the Rust side a UDF of the same name builds the
@@ -441,6 +468,19 @@ public final class OpenSearchNestedFieldRewriter {
                 LOGGER.info("[NESTED-LAMBDA] filter rewritten to nested_any_match (flat, Lucene-delegable)");
                 return combineWithParentConjuncts(directMatch, parentConjuncts, rexBuilder);
             }
+        } else if (independentConjunctRoutingEnabled()) {
+            // See INDEPENDENT_CONJUNCT_ROUTING_PROPERTY javadoc: deliberately unsafe, requested
+            // explicitly to unblock "does each conjunct reach its appropriate backend" plumbing work.
+            // Rewrite each array conjunct to its OWN leaf (independently marked/routed, exactly like
+            // independent flat-column conjuncts) instead of fusing them into one joint tree.
+            RexNode independentAnd = tryIndependentConjunctRewrite(arrayConjuncts, arrayCol, inputRowType, rexBuilder);
+            if (independentAnd != null) {
+                LOGGER.warn(
+                    "[NESTED-LAMBDA] filter rewritten to INDEPENDENT per-conjunct nested leaves "
+                        + "(joint per-element semantics NOT enforced — see INDEPENDENT_CONJUNCT_ROUTING_PROPERTY)"
+                );
+                return combineWithParentConjuncts(independentAnd, parentConjuncts, rexBuilder);
+            }
         }
 
         List<Map<String, Object>> arrayTrees = new ArrayList<>();
@@ -472,6 +512,68 @@ public final class OpenSearchNestedFieldRewriter {
         );
 
         return combineWithParentConjuncts(anyMatchCall, parentConjuncts, rexBuilder);
+    }
+
+    /**
+     * See {@link #INDEPENDENT_CONJUNCT_ROUTING_PROPERTY}: rewrites each array-referencing conjunct to
+     * its OWN independent leaf instead of fusing them into one joint tree. A keyword-equality conjunct
+     * becomes {@code NESTED_ANY_MATCH} (dual-viable, Lucene-delegable); anything else becomes its own
+     * single-conjunct {@code NESTED_ANY_MATCH_EXPR} (DataFusion-only). ANDs all the resulting leaves
+     * together. Returns {@code null} (triggering the generic joint-tree path) if any conjunct's tree
+     * can't be built at all — same fallback contract as {@link #tryLambdaRewrite}.
+     *
+     * <p>Each leaf is independently viable/annotated by the marking rules downstream exactly like
+     * independent flat-column conjuncts are — this is what makes each conjunct reach its own
+     * appropriate backend, at the deliberate cost of joint per-element correctness (see the flag's
+     * javadoc).
+     */
+    private static RexNode tryIndependentConjunctRewrite(
+        List<RexNode> arrayConjuncts,
+        int arrayCol,
+        RelDataType inputRowType,
+        RexBuilder rexBuilder
+    ) {
+        ExprTreeBuilder builder = new ExprTreeBuilder(arrayCol, inputRowType);
+        List<RexNode> leaves = new ArrayList<>(arrayConjuncts.size());
+        for (RexNode conjunct : arrayConjuncts) {
+            RexNode directMatch = tryDirectEqualityRewrite(conjunct, arrayCol, inputRowType, rexBuilder);
+            if (directMatch != null) {
+                leaves.add(directMatch);
+                continue;
+            }
+            Map<String, Object> tree = builder.build(conjunct);
+            if (tree == null) {
+                return null; // unsupported shape somewhere in this conjunct — fall back entirely
+            }
+            RexNode leaf = singleConjunctAnyMatchExpr(tree, arrayCol, inputRowType, rexBuilder);
+            if (leaf == null) {
+                return null; // serialization failed — fall back entirely
+            }
+            leaves.add(leaf);
+        }
+        if (leaves.size() == 1) {
+            return leaves.get(0);
+        }
+        return rexBuilder.makeCall(rexBuilder.getTypeFactory().createSqlType(SqlTypeName.BOOLEAN), org.apache.calcite.sql.fun.SqlStdOperatorTable.AND, leaves);
+    }
+
+    /** Builds a single-conjunct {@code NESTED_ANY_MATCH_EXPR(arrayCol, jsonTree)} call, or {@code null}
+     *  if the tree can't be serialized. */
+    private static RexNode singleConjunctAnyMatchExpr(Map<String, Object> tree, int arrayCol, RelDataType inputRowType, RexBuilder rexBuilder) {
+        String json;
+        try {
+            json = com.fasterxml.jackson.databind.json.JsonMapper.builder().build().writeValueAsString(tree);
+        } catch (Exception e) {
+            LOGGER.warn("[NESTED-LAMBDA] failed to serialize independent-conjunct expr tree", e);
+            return null;
+        }
+        RexNode arrayRef = rexBuilder.makeInputRef(inputRowType.getFieldList().get(arrayCol).getType(), arrayCol);
+        RexNode exprLit = rexBuilder.makeLiteral(json);
+        return rexBuilder.makeCall(
+            rexBuilder.getTypeFactory().createSqlType(SqlTypeName.BOOLEAN),
+            NESTED_ANY_MATCH_EXPR_OP,
+            List.of(arrayRef, exprLit)
+        );
     }
 
     /**
