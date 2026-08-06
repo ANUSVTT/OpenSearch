@@ -107,6 +107,45 @@ public final class OpenSearchNestedFieldRewriter {
     }
 
     /**
+     * Opt-in CHILD-GRAIN nested split (default off). When enabled, a fused nested predicate whose
+     * keyword-equality conjunct(s) are Lucene-eligible is emitted so the keyword clause is evaluated by
+     * Lucene at CHILD-doc grain and its per-element verdict is intersected with the DataFusion range/other
+     * clauses AT THE SAME ELEMENT (before the ∃ roll-up) — the maximally-selective, element-exact split.
+     * The keyword conjunct in the {@code NESTED_ANY_MATCH_EXPR} JSON tree is replaced by a
+     * {@code {"lucene": <clauseIdx>}} node, and the paired {@code NESTED_ANY_MATCH_CHILD} peer is tagged
+     * child-grain (shipped as a child-scoped query, not a block-join) so the executor consumes it per element.
+     *
+     * <p>When OFF (default), the safe SUPERSET pruning peer is emitted instead (keyword clause still runs on
+     * Lucene, but as a parent-grain superset prune AND-ed with the authoritative DataFusion predicate). Both
+     * are correct; child-grain is strictly tighter pruning. Gated so the proven superset path stays the
+     * default while the child-grain path is validated. Read fresh each call.
+     */
+    public static final String CHILD_GRAIN_SPLIT_PROPERTY = "opensearch.analytics.nested.child_grain_split";
+
+    private static boolean childGrainSplitEnabled() {
+        return Boolean.parseBoolean(System.getProperty(CHILD_GRAIN_SPLIT_PROPERTY, "false"));
+    }
+
+    /**
+     * Synthetic scalar function {@code nested_any_match_child(arrayCol, 'field', 'EQUALS', literal, clauseIdx)}
+     * — the CHILD-GRAIN sibling of {@link #NESTED_ANY_MATCH_EXPR_OP} for the opt-in child-grain split. Same
+     * keyword-equality meaning, but its Lucene serializer ships a CHILD-scoped query (a term on
+     * {@code path.field} restricted to that path's child docs, NOT wrapped in a block-join), so the delegated
+     * scorer yields CHILD docIds. The executor collects those at child-element grain and feeds the per-element
+     * verdict into the paired {@code NESTED_ANY_MATCH_EXPR} residual's {@code {"lucene": clauseIdx}} node —
+     * intersecting keyword (Lucene) and range/other (DataFusion) clauses AT THE SAME ELEMENT before the ∃
+     * roll-up. The trailing {@code clauseIdx} (Int) pairs this peer with its JSON node.
+     */
+    public static final SqlFunction NESTED_ANY_MATCH_CHILD_OP = new SqlFunction(
+        "NESTED_ANY_MATCH_CHILD",
+        SqlKind.OTHER_FUNCTION,
+        ReturnTypes.BOOLEAN_NULLABLE,
+        null,
+        OperandTypes.ANY,
+        SqlFunctionCategory.USER_DEFINED_FUNCTION
+    );
+
+    /**
      * Synthetic scalar function: {@code nested_any_match_expr(arrayCol, '<json expr tree>') → BOOLEAN}.
      * Emitted by the filter rewrite in place of Correlate+Uncollect for ANY predicate shape on a
      * single array column — a lone equality leaf, a compound AND/OR/NOT tree, arithmetic (+,-,*,/,%),
@@ -495,10 +534,76 @@ public final class OpenSearchNestedFieldRewriter {
                 }
                 arrayTrees.add(tree);
             }
+
+            // ── CHILD-GRAIN split (opt-in) ──────────────────────────────────────────────────
+            // When enabled, each keyword-equality conjunct that Lucene can evaluate is REPLACED in
+            // the JSON tree by a {"lucene": <clauseIdx>} node and paired with a
+            // NESTED_ANY_MATCH_CHILD peer. The executor evaluates the residual (with the
+            // range/other clauses on the decoded array) and, at the {"lucene"} node, consumes the
+            // Lucene peer's per-element verdict — so keyword (Lucene) and range (DataFusion)
+            // intersect at the SAME element before the ∃ roll-up. childPeers[i] pairs with clause
+            // index i. Only fires in the compound (>1) path.
+            List<RexNode> childPeers = new ArrayList<>();
+            if (arrayConjuncts.size() > 1 && childGrainSplitEnabled()) {
+                for (int i = 0; i < arrayConjuncts.size(); i++) {
+                    RexNode peer = tryDirectEqualityChildRewrite(arrayConjuncts.get(i), arrayCol, inputRowType, rexBuilder, childPeers.size());
+                    if (peer != null) {
+                        // Replace this conjunct's JSON subtree with a lucene-delegated marker at the peer's index.
+                        arrayTrees.set(i, Map.of("lucene", childPeers.size()));
+                        childPeers.add(peer);
+                    }
+                }
+            }
+
             Map<String, Object> combinedTree = arrayTrees.size() == 1 ? arrayTrees.get(0) : Map.of("op", "AND", "args", arrayTrees);
-            combinedArrayCondition = buildAnyMatchExprCall(combinedTree, arrayCol, inputRowType, rexBuilder);
-            if (combinedArrayCondition == null) {
+            RexNode anyMatchCall = buildAnyMatchExprCall(combinedTree, arrayCol, inputRowType, rexBuilder);
+            if (anyMatchCall == null) {
                 return null; // serialization failed — fall back entirely
+            }
+
+            // ── Lucene pruning peers (superset-safe split, same idea as flat-column delegation)
+            // ─────────────────────────────────────────────────────────────────────────────────
+            // The fused NESTED_ANY_MATCH_EXPR above is the AUTHORITATIVE, DataFusion-evaluated,
+            // element-correlated predicate — it alone is 100% correct. For each top-level-AND
+            // keyword-equality conjunct on our array we ALSO emit a NESTED_ANY_MATCH_EXPR call
+            // carrying just that single-equality leaf, which is dual-viable [lucene, datafusion] and
+            // so gets performance-delegated to Lucene's native block-join query. That call matches
+            // "parent has SOME child with field=v", a SUPERSET of the fused predicate's parent set —
+            // AND-ing a superset with the authoritative predicate never changes the result, but it
+            // lets Lucene's inverted index PRUNE which rows DataFusion must evaluate. Only pure
+            // keyword equality qualifies. Emitted only in the compound (size>1) path — a single
+            // conjunct's tree already IS the equality leaf, so the fused call above is already
+            // Lucene-viable and a peer would be redundant. When child-grain split fired above, the
+            // child peers ARE the keyword delegation (at element grain) — no separate superset peers.
+            List<RexNode> lucenerPeers = new ArrayList<>(childPeers);
+            if (arrayConjuncts.size() > 1 && childPeers.isEmpty()) {
+                for (RexNode conjunct : arrayConjuncts) {
+                    RexNode peer = tryDirectEqualityRewrite(conjunct, arrayCol, inputRowType, rexBuilder);
+                    if (peer != null) {
+                        lucenerPeers.add(peer);
+                    }
+                }
+            }
+
+            if (lucenerPeers.isEmpty()) {
+                combinedArrayCondition = anyMatchCall;
+            } else {
+                // authoritative fused expr AND (Lucene-prunable keyword peers). The peers are
+                // supersets, so this is semantically identical to `anyMatchCall` alone; the AND
+                // exists purely so the marking layer can performance-delegate the peers to Lucene.
+                List<RexNode> operands = new ArrayList<>(lucenerPeers.size() + 1);
+                operands.add(anyMatchCall);
+                operands.addAll(lucenerPeers);
+                combinedArrayCondition = rexBuilder.makeCall(
+                    rexBuilder.getTypeFactory().createSqlType(SqlTypeName.BOOLEAN),
+                    org.apache.calcite.sql.fun.SqlStdOperatorTable.AND,
+                    operands
+                );
+                LOGGER.info(
+                    "[NESTED-LAMBDA] fused NESTED_ANY_MATCH_EXPR (authoritative) + {} Lucene pruning peer(s) "
+                        + "(keyword-equality conjuncts delegated to Lucene for pruning)",
+                    lucenerPeers.size()
+                );
             }
         }
 
@@ -561,7 +666,134 @@ public final class OpenSearchNestedFieldRewriter {
     }
 
     /**
-     * ANDs {@code arrayCall} together with any parent-only conjuncts (passed through unchanged,
+     * Fast-path / superset-pruning-peer check: if {@code conjunct} is exactly
+     * {@code ITEM($arrayCol,'field') = 'literal'} (either operand order) with a STRING literal
+     * value, emits a {@code NESTED_ANY_MATCH_EXPR(arrayCol, '{"op":"=","args":[{"field":F},{"lit":V}]}')}
+     * call carrying just that single-equality-leaf tree. {@code NestedAnyMatchExprSerializer#canServe}
+     * (in the Lucene backend) recognizes exactly this single-leaf shape, so this call is registered as
+     * a dual-viable [lucene, datafusion] filter capability, enabling performance-delegation to Lucene's
+     * native nested block-join query — unlike a compound tree, which stays DataFusion-only.
+     *
+     * <p>Deliberately restricted to a STRING-literal comparison value: only keyword-typed nested
+     * leaves make sense as a Lucene term lookup in this composite (parquet+lucene) setup, and no
+     * leaf-level field-type info is available at this point — nested leaf fields have no entry in
+     * {@code FieldStorageResolver} (it explicitly skips {@code "nested"}-typed fields). Requiring a
+     * string literal is the same conservative heuristic this class already uses elsewhere ({@code
+     * ItemFinder}/{@code ExprTreeBuilder}) to infer "this looks like a keyword comparison" without
+     * real type resolution. A numeric/boolean-literal comparison falls through to the generic
+     * {@code NESTED_ANY_MATCH_EXPR} path unchanged, staying DataFusion-only rather than risk
+     * mis-registering a Lucene capability for a field Lucene doesn't actually index in this format.
+     *
+     * <p>Only {@code EQUALS} is handled (not {@code NOT_EQUALS}) — a nested "field != value"
+     * existence check has no Lucene query primitive as simple as a single {@code TermQuery} and
+     * isn't needed for the common case this fast path targets. Returns {@code null} for anything
+     * else (including {@code NOT_EQUALS}, non-comparison kinds, or a non-string literal), which
+     * triggers the generic path in the caller.
+     */
+    private static RexNode tryDirectEqualityRewrite(RexNode conjunct, int arrayCol, RelDataType inputRowType, RexBuilder rexBuilder) {
+        if (conjunct.getKind() != SqlKind.EQUALS || !(conjunct instanceof RexCall call) || call.getOperands().size() != 2) {
+            return null;
+        }
+        RexNode left = call.getOperands().get(0);
+        RexNode right = call.getOperands().get(1);
+
+        RexCall itemCall;
+        RexLiteral valueLit;
+        if (isItemOnArray(left, arrayCol) && right instanceof RexLiteral lit) {
+            itemCall = (RexCall) left;
+            valueLit = lit;
+        } else if (isItemOnArray(right, arrayCol) && left instanceof RexLiteral lit) {
+            itemCall = (RexCall) right;
+            valueLit = lit;
+        } else {
+            return null;
+        }
+        if (valueLit.getTypeName() != SqlTypeName.CHAR && valueLit.getTypeName() != SqlTypeName.VARCHAR) {
+            return null; // not a string comparison — leave for the generic path
+        }
+        RexNode fieldNameNode = itemCall.getOperands().get(1);
+        if (!(fieldNameNode instanceof RexLiteral fieldLit) || fieldLit.getTypeName() != SqlTypeName.CHAR) {
+            return null;
+        }
+        String fieldName = fieldLit.getValueAs(String.class);
+        String value = valueLit.getValueAs(String.class);
+
+        Map<String, Object> equalityLeafTree = Map.of(
+            "op",
+            "=",
+            "args",
+            List.of(Map.of("field", fieldName), Map.of("lit", value))
+        );
+        return buildAnyMatchExprCall(equalityLeafTree, arrayCol, inputRowType, rexBuilder);
+    }
+
+    /**
+     * CHILD-GRAIN sibling of {@link #tryDirectEqualityRewrite} for the opt-in child-grain split: for a
+     * keyword-equality conjunct {@code ITEM($arrayCol,'field') = 'value'}, emits
+     * {@code NESTED_ANY_MATCH_CHILD(arrayRef, 'field', 'EQUALS', 'value', clauseIdx)} — the child-scoped
+     * Lucene peer paired with the {@code {"lucene": clauseIdx}} node in the residual JSON. Returns
+     * {@code null} for any non-(keyword-equality) shape, so the caller leaves that conjunct in the JSON tree
+     * for DataFusion. Same operand parse as the parent-grain variant plus the trailing {@code clauseIdx}.
+     */
+    private static RexNode tryDirectEqualityChildRewrite(
+        RexNode conjunct,
+        int arrayCol,
+        RelDataType inputRowType,
+        RexBuilder rexBuilder,
+        int clauseIdx
+    ) {
+        if (conjunct.getKind() != SqlKind.EQUALS || !(conjunct instanceof RexCall call) || call.getOperands().size() != 2) {
+            return null;
+        }
+        RexNode left = call.getOperands().get(0);
+        RexNode right = call.getOperands().get(1);
+        RexCall itemCall;
+        RexLiteral valueLit;
+        if (isItemOnArray(left, arrayCol) && right instanceof RexLiteral lit) {
+            itemCall = (RexCall) left;
+            valueLit = lit;
+        } else if (isItemOnArray(right, arrayCol) && left instanceof RexLiteral lit) {
+            itemCall = (RexCall) right;
+            valueLit = lit;
+        } else {
+            return null;
+        }
+        if (valueLit.getTypeName() != SqlTypeName.CHAR && valueLit.getTypeName() != SqlTypeName.VARCHAR) {
+            return null;
+        }
+        RexNode fieldNameNode = itemCall.getOperands().get(1);
+        if (!(fieldNameNode instanceof RexLiteral fieldLit) || fieldLit.getTypeName() != SqlTypeName.CHAR) {
+            return null;
+        }
+        String fieldName = fieldLit.getValueAs(String.class);
+        String value = valueLit.getValueAs(String.class);
+        RexNode arrayRef = rexBuilder.makeInputRef(inputRowType.getFieldList().get(arrayCol).getType(), arrayCol);
+        return rexBuilder.makeCall(
+            rexBuilder.getTypeFactory().createSqlType(SqlTypeName.BOOLEAN),
+            NESTED_ANY_MATCH_CHILD_OP,
+            List.of(
+                arrayRef,
+                rexBuilder.makeLiteral(fieldName),
+                rexBuilder.makeLiteral("EQUALS"),
+                rexBuilder.makeLiteral(value),
+                rexBuilder.makeLiteral(
+                    java.math.BigDecimal.valueOf(clauseIdx),
+                    rexBuilder.getTypeFactory().createSqlType(SqlTypeName.INTEGER),
+                    false
+                )
+            )
+        );
+    }
+
+    /** True if {@code node} is exactly {@code ITEM($arrayCol, <anything>)}. */
+    private static boolean isItemOnArray(RexNode node, int arrayCol) {
+        if (!(node instanceof RexCall call) || !"ITEM".equals(call.getOperator().getName()) || call.getOperands().size() != 2) {
+            return false;
+        }
+        return call.getOperands().get(0) instanceof RexInputRef ref && ref.getIndex() == arrayCol;
+    }
+
+    /** ANDs {@code arrayCall} together with any parent-only conjuncts (passed through unchanged,
      *  since they're independent per-row and don't need per-element evaluation); returns {@code
      *  arrayCall} directly when there are none. */
     private static RexNode combineWithParentConjuncts(RexNode arrayCall, List<RexNode> parentConjuncts, RexBuilder rexBuilder) {
