@@ -134,7 +134,6 @@ public class DataFusionFragmentConvertor implements FragmentConvertor {
         FunctionMappings.s(ParseAdapter.LOCAL_PARSE_OP, "parse"),
         FunctionMappings.s(GrokAdapter.LOCAL_GROK_OP, "grok"),
         FunctionMappings.s(SqlStdOperatorTable.ITEM, "item"),
-        FunctionMappings.s(org.opensearch.analytics.planner.rules.OpenSearchNestedFieldRewriter.NESTED_ANY_MATCH_OP, "nested_any_match"),
         FunctionMappings.s(org.opensearch.analytics.planner.rules.OpenSearchNestedFieldRewriter.NESTED_ANY_MATCH_EXPR_OP, "nested_any_match_expr"),
         FunctionMappings.s(UnixTimestampAdapter.LOCAL_TO_UNIXTIME_OP, "to_unixtime"),
         FunctionMappings.s(DateTimeAdapters.LOCAL_NOW_OP, "now"),

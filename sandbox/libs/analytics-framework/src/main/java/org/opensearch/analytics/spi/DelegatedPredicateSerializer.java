@@ -66,4 +66,26 @@ public interface DelegatedPredicateSerializer {
     default FieldReferences referencedFields(RexCall call, List<FieldStorageInfo> fieldStorage) {
         return null;
     }
+
+    /**
+     * Whether this backend can actually serve THIS SPECIFIC predicate instance, beyond the static
+     * (function, field type) capability declaration. The default (always {@code true}) preserves
+     * today's behavior for every function whose viability is fully determined by its static
+     * capability registration.
+     *
+     * <p>Exists for functions whose {@code RexCall} shape is too generic for static registration
+     * alone to decide viability — e.g. {@code NESTED_ANY_MATCH_EXPR} carries an arbitrary
+     * JSON-serialized per-element expression tree as one of its operands; a backend capable of
+     * translating a single string-equality leaf into its own native query may still be unable to
+     * translate an arbitrary compound/arithmetic tree. Overriding this method lets the SAME
+     * (function, field type) capability declaration stay coarse (so the field-storage/format checks
+     * in {@code OpenSearchFilterRule} still apply uniformly) while the backend inspects the actual
+     * call contents to decide, per query, whether it can serve this one.
+     *
+     * <p>Called only for backends whose static capability check already passed — this is an
+     * additional narrowing, never a way to claim viability the static declaration didn't grant.
+     */
+    default boolean canServe(RexCall call, List<FieldStorageInfo> fieldStorage) {
+        return true;
+    }
 }

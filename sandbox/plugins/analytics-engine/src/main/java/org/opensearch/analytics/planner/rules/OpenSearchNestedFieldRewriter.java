@@ -86,19 +86,20 @@ public final class OpenSearchNestedFieldRewriter {
      * filter (e.g. {@code comments.author='frank' AND comments.score<50}). Default {@code false}.
      *
      * <p><b>This is a deliberate, accepted correctness gap, not a safe default.</b> When enabled, each
-     * array-referencing conjunct is rewritten and marked independently — a keyword-equality conjunct
-     * becomes its own dual-viable {@code NESTED_ANY_MATCH} leaf (Lucene-delegable), any other conjunct
-     * becomes its own single-conjunct {@code NESTED_ANY_MATCH_EXPR} leaf (DataFusion-only) — exactly
-     * mirroring how independent flat-column conjuncts (e.g. {@code title=/views>}) are already marked
-     * and routed. This intentionally DROPS the joint-per-element guarantee this class otherwise
-     * enforces everywhere else: vanilla nested semantics require ONE array element to satisfy every
-     * conjunct together, but independently-annotated leaves get independently evaluated and ANDed at
-     * the row level, so a row where DIFFERENT elements each satisfy a different conjunct is wrongly
-     * included (e.g. {@code comments=[{frank,90},{carol,5}]} wrongly matches {@code author='frank' AND
-     * score<50} — carol's low score, not frank's, satisfies the second conjunct). Requested explicitly
-     * to unblock incremental "does this reach the right backend" plumbing work ahead of a real fix
-     * (fusing same-array conjuncts into one combined Lucene query, tracked separately) — do not enable
-     * by default and do not remove this javadoc's warning when touching this flag.
+     * array-referencing top-level conjunct gets its OWN {@code NESTED_ANY_MATCH_EXPR} call instead of
+     * being fused into one joint tree — each call is independently marked/routed by {@code
+     * OpenSearchFilterRule} exactly like independent flat-column conjuncts (e.g. {@code
+     * title=/views>}) already are, letting each conjunct reach its own most suitable backend (see
+     * {@link #tryLambdaRewrite}). This intentionally DROPS the joint-per-element guarantee this class
+     * otherwise enforces everywhere else: vanilla nested semantics require ONE array element to
+     * satisfy every conjunct together, but independently-annotated leaves get independently evaluated
+     * and ANDed at the row level, so a row where DIFFERENT elements each satisfy a different conjunct
+     * is wrongly included (e.g. {@code comments=[{frank,90},{carol,5}]} wrongly matches {@code
+     * author='frank' AND score<50} — carol's low score, not frank's, satisfies the second conjunct).
+     * Requested explicitly to unblock incremental "does this reach the right backend" plumbing work
+     * ahead of a real fix (fusing same-array conjuncts into one combined Lucene query, tracked
+     * separately) — do not enable by default and do not remove this javadoc's warning when touching
+     * this flag.
      *
      * <p>Read fresh each call (not cached) so it can be toggled per-run without rebuilding.
      */
@@ -109,32 +110,36 @@ public final class OpenSearchNestedFieldRewriter {
     }
 
     /**
-     * Synthetic scalar function: {@code nested_any_match(arrayCol, 'fieldName', 'op', literal) → BOOLEAN}.
-     * Emitted by the filter rewrite in place of Correlate+Uncollect. The Substrait emission maps this
-     * to a scalar function call "nested_any_match"; on the Rust side a UDF of the same name builds the
-     * equivalent {@code array_any_match(col, s -> get_field(s, field) op value)} lambda expression and
-     * evaluates it. Row count is never changed — one boolean per parent row.
-     */
-    public static final SqlFunction NESTED_ANY_MATCH_OP = new SqlFunction(
-        "NESTED_ANY_MATCH",
-        SqlKind.OTHER_FUNCTION,
-        ReturnTypes.BOOLEAN_NULLABLE,
-        null,
-        OperandTypes.ANY,
-        SqlFunctionCategory.USER_DEFINED_FUNCTION
-    );
-
-    /**
      * Synthetic scalar function: {@code nested_any_match_expr(arrayCol, '<json expr tree>') → BOOLEAN}.
-     * Generalization of {@link #NESTED_ANY_MATCH_OP} for compound (AND/OR/NOT), arithmetic
-     * (+,-,*,/,%), or otherwise-shaped predicates on ONE array column that {@code NESTED_ANY_MATCH}'s
-     * flat (field, op, value) triple can't express — e.g. {@code subs.views > 65 and subs.views % 2 =
-     * 0} (a single element must satisfy the WHOLE compound condition — matches vanilla OpenSearch's
-     * native {@code nested} query + Painless script semantics, confirmed by direct comparison: vanilla
-     * requires ONE element to jointly satisfy every clause, never independent per-clause existence
-     * checks). The second argument is a JSON string describing the per-element predicate tree — see
-     * {@link ExprTreeBuilder} for the node shapes; the Rust {@code nested_any_match_expr} UDF parses
-     * and evaluates it per array element, short-circuiting on the first match. Row count never changes.
+     * Emitted by the filter rewrite in place of Correlate+Uncollect for ANY predicate shape on a
+     * single array column — a lone equality leaf, a compound AND/OR/NOT tree, arithmetic (+,-,*,/,%),
+     * or any mix thereof — e.g. {@code subs.views > 65 and subs.views % 2 = 0} (a single element must
+     * satisfy the WHOLE tree carried by ONE call — matches vanilla OpenSearch's native {@code nested}
+     * query + Painless script semantics for everything inside that one JSON tree: one element must
+     * jointly satisfy every clause the tree contains). The second argument is a JSON string
+     * describing the per-element predicate tree — see {@link ExprTreeBuilder} for the node shapes;
+     * the Rust {@code nested_any_match_expr} UDF parses and evaluates it per array element,
+     * short-circuiting on the first match. Row count never changes — one boolean per parent row.
+     *
+     * <p><b>By default, top-level AND conjuncts on the same array ARE fused into one call</b> —
+     * {@code tryLambdaRewrite} combines every array-referencing conjunct into one joint tree, so
+     * {@code comments.author = 'frank' AND comments.score < 50} requires a SINGLE element to satisfy
+     * both, matching vanilla's strict joint-element guarantee. Behind {@link
+     * #INDEPENDENT_CONJUNCT_ROUTING_PROPERTY} (default off), each top-level conjunct instead gets its
+     * OWN call, ANDed together at the row level — trading that joint-element guarantee for letting
+     * each conjunct reach its own most suitable backend independently; see that property's javadoc
+     * for the accepted correctness gap. A compound condition written as a SINGLE Calcite expression
+     * (an explicit OR, or an AND nested inside an OR, etc. — anything that isn't itself a top-level
+     * AND operand) always becomes one call with true joint semantics, regardless of the flag.
+     *
+     * <p>Whether a given call is ALSO Lucene-delegable (not just DataFusion-native) is decided per
+     * instance, not by a separate function: {@code CapabilityRegistry} registers this function as
+     * dual-viable {@code [lucene, datafusion]} on {@code FieldType.ARRAY}, and {@code
+     * OpenSearchFilterRule} additionally consults each candidate backend's {@code
+     * DelegatedPredicateSerializer#canServe} to narrow that further per query — Lucene's serializer
+     * inspects the JSON tree and approves only a single string-equality leaf (the shape it can
+     * translate into a native {@code TermQuery}); DataFusion has no such override and always serves
+     * every shape. See {@code NestedAnyMatchExprSerializer} on the Lucene side.
      */
     public static final SqlFunction NESTED_ANY_MATCH_EXPR_OP = new SqlFunction(
         "NESTED_ANY_MATCH_EXPR",
@@ -374,7 +379,7 @@ public final class OpenSearchNestedFieldRewriter {
 
     /**
      * Rewrites a filter containing {@code ITEM($arrayCol,'field') <op> <literal>} into a filter
-     * using {@code NESTED_ANY_MATCH($arrayCol, 'field', '<op>', <literal>)}. This is the "peek
+     * using {@code NESTED_ANY_MATCH_EXPR($arrayCol, '<json expr tree>')}. This is the "peek
      * inside the cell" approach: the function iterates the array internally and returns TRUE/FALSE
      * per parent row — row count never changes.
      *
@@ -422,17 +427,29 @@ public final class OpenSearchNestedFieldRewriter {
      * Attempts to rewrite the filter condition using {@code NESTED_ANY_MATCH_EXPR}. Splits the
      * TOP-LEVEL {@code AND} conjuncts (if any) into two groups:
      * <ul>
-     *   <li>conjuncts that reference our array column — these are combined into ONE joint
-     *       per-element expression tree (a single element must satisfy ALL of them together,
-     *       matching vanilla's semantics), wrapped in one {@code NESTED_ANY_MATCH_EXPR} call</li>
+     *   <li>conjuncts that reference our array column — combined into the array-side condition per
+     *       {@link #INDEPENDENT_CONJUNCT_ROUTING_PROPERTY} below</li>
      *   <li>conjuncts that don't (pure parent predicates, e.g. {@code count > 0}) — passed through
      *       unchanged and ANDed back in at the row level, since parent predicates are genuinely
      *       independent per-row and don't need per-element evaluation</li>
      * </ul>
-     * A non-AND condition (a single comparison, an OR, a NOT, ...) is treated as one conjunct.
-     * Returns null (triggering the Correlate+Uncollect fallback) if any array-referencing conjunct's
-     * tree can't be built — e.g. it touches a DIFFERENT array column, or mixes an array-of-ours
-     * reference with a parent column inside the SAME comparison (ambiguous — which row's value?).
+     * A non-AND condition (a single comparison, an OR, a NOT, ...) is treated as one conjunct, so
+     * a single {@code comments.a = X or comments.b = Y}-style OR always becomes ONE joint call
+     * regardless of the flag below.
+     *
+     * <p><b>Default (flag off): every array-referencing conjunct is fused into ONE joint
+     * {@code NESTED_ANY_MATCH_EXPR} call</b> — a single element must satisfy the WHOLE combined
+     * condition, matching vanilla's strict joint-element guarantee. This is the safe default.
+     *
+     * <p><b>{@link #INDEPENDENT_CONJUNCT_ROUTING_PROPERTY} on: each array-referencing conjunct gets
+     * its OWN independent {@code NESTED_ANY_MATCH_EXPR} call</b> instead, ANDed together at the row
+     * level — see that property's javadoc for the accepted correctness gap this trades for
+     * per-conjunct backend routing.
+     *
+     * <p>Returns null (triggering the Correlate+Uncollect fallback) if any array-referencing
+     * conjunct's tree can't be built — e.g. it touches a DIFFERENT array column, or mixes an
+     * array-of-ours reference with a parent column inside the SAME comparison (ambiguous — which
+     * row's value?).
      */
     private static RexNode tryLambdaRewrite(RexNode condition, int arrayCol, RelDataType inputRowType, RexBuilder rexBuilder) {
         List<RexNode> conjuncts = condition.getKind() == SqlKind.AND ? ((RexCall) condition).getOperands() : List.of(condition);
@@ -451,124 +468,94 @@ public final class OpenSearchNestedFieldRewriter {
             return null; // nothing to rewrite on our array — shouldn't normally happen, fall back
         }
 
-        // Fast path: a single, standalone keyword-equality conjunct on our array (e.g.
-        // `comments.author = "alice"`, alone or ANDed only with parent-only conjuncts) becomes
-        // NESTED_ANY_MATCH — the flat (field, op, value) predecessor of NESTED_ANY_MATCH_EXPR.
-        // Unlike NESTED_ANY_MATCH_EXPR (DataFusion-only), NESTED_ANY_MATCH is registered as a
-        // dual-viable [lucene, datafusion] filter capability (see LuceneAnalyticsBackendPlugin),
-        // so it can be performance-delegated to Lucene's native nested block-join query exactly
-        // like a flat EQUALS predicate is today — giving nested equality the same
-        // Lucene-delegation behavior as flat fields. Only fires for a SINGLE array conjunct: a
-        // compound joint condition (e.g. `author='alice' AND score>10`) must stay on the generic
-        // path below, since a partial match on just the equality clause would be wrong (see class
-        // javadoc on joint semantics).
-        if (arrayConjuncts.size() == 1) {
-            RexNode directMatch = tryDirectEqualityRewrite(arrayConjuncts.get(0), arrayCol, inputRowType, rexBuilder);
-            if (directMatch != null) {
-                LOGGER.info("[NESTED-LAMBDA] filter rewritten to nested_any_match (flat, Lucene-delegable)");
-                return combineWithParentConjuncts(directMatch, parentConjuncts, rexBuilder);
-            }
-        } else if (independentConjunctRoutingEnabled()) {
+        RexNode combinedArrayCondition;
+        if (arrayConjuncts.size() > 1 && independentConjunctRoutingEnabled()) {
             // See INDEPENDENT_CONJUNCT_ROUTING_PROPERTY javadoc: deliberately unsafe, requested
-            // explicitly to unblock "does each conjunct reach its appropriate backend" plumbing work.
-            // Rewrite each array conjunct to its OWN leaf (independently marked/routed, exactly like
-            // independent flat-column conjuncts) instead of fusing them into one joint tree.
-            RexNode independentAnd = tryIndependentConjunctRewrite(arrayConjuncts, arrayCol, inputRowType, rexBuilder);
-            if (independentAnd != null) {
-                LOGGER.warn(
-                    "[NESTED-LAMBDA] filter rewritten to INDEPENDENT per-conjunct nested leaves "
-                        + "(joint per-element semantics NOT enforced — see INDEPENDENT_CONJUNCT_ROUTING_PROPERTY)"
-                );
-                return combineWithParentConjuncts(independentAnd, parentConjuncts, rexBuilder);
+            // explicitly to unblock "does each conjunct reach its appropriate backend" plumbing
+            // work. Each array conjunct becomes its OWN call (independently marked/routed, exactly
+            // like independent flat-column conjuncts) instead of being fused into one joint tree.
+            combinedArrayCondition = tryIndependentConjunctRewrite(arrayConjuncts, builder, arrayCol, inputRowType, rexBuilder);
+            if (combinedArrayCondition == null) {
+                return null; // unsupported shape somewhere in a conjunct — fall back entirely
+            }
+            LOGGER.warn(
+                "[NESTED-LAMBDA] filter rewritten to INDEPENDENT per-conjunct nested_any_match_expr calls "
+                    + "(joint per-element semantics NOT enforced — see INDEPENDENT_CONJUNCT_ROUTING_PROPERTY)"
+            );
+        } else {
+            // Every array-referencing conjunct is combined into ONE joint per-element tree, regardless
+            // of count or shape — a single equality leaf and a multi-clause compound condition both go
+            // through the same NESTED_ANY_MATCH_EXPR construction below. Whether the resulting call is
+            // ALSO Lucene-delegable (not just DataFusion-native) is decided later, per instance, by
+            // OpenSearchFilterRule consulting each candidate backend's DelegatedPredicateSerializer#canServe
+            // (see NESTED_ANY_MATCH_EXPR_OP's javadoc) — this method never special-cases the single-leaf
+            // shape itself.
+            List<Map<String, Object>> arrayTrees = new ArrayList<>();
+            for (RexNode conjunct : arrayConjuncts) {
+                Map<String, Object> tree = builder.build(conjunct);
+                if (tree == null) {
+                    return null; // unsupported shape somewhere in this conjunct — fall back entirely
+                }
+                arrayTrees.add(tree);
+            }
+            Map<String, Object> combinedTree = arrayTrees.size() == 1 ? arrayTrees.get(0) : Map.of("op", "AND", "args", arrayTrees);
+            combinedArrayCondition = buildAnyMatchExprCall(combinedTree, arrayCol, inputRowType, rexBuilder);
+            if (combinedArrayCondition == null) {
+                return null; // serialization failed — fall back entirely
             }
         }
 
-        List<Map<String, Object>> arrayTrees = new ArrayList<>();
+        return combineWithParentConjuncts(combinedArrayCondition, parentConjuncts, rexBuilder);
+    }
+
+    /**
+     * See {@link #INDEPENDENT_CONJUNCT_ROUTING_PROPERTY}: builds one independent
+     * {@code NESTED_ANY_MATCH_EXPR} call per array-referencing conjunct instead of fusing them into
+     * one joint tree, ANDing all the resulting leaves together. Returns {@code null} (triggering the
+     * generic joint-tree fallback) if any conjunct's tree can't be built at all — same fallback
+     * contract as {@link #tryLambdaRewrite}.
+     *
+     * <p>Each leaf is independently viable/annotated by the marking rules downstream exactly like
+     * independent flat-column conjuncts are — this is what makes each conjunct reach its own
+     * appropriate backend, at the deliberate cost of joint per-element correctness (see the flag's
+     * javadoc). Which backend(s) each leaf is actually viable on is decided per instance by {@code
+     * OpenSearchFilterRule} consulting {@code DelegatedPredicateSerializer#canServe} against that
+     * leaf's own JSON tree — this method never special-cases the single-leaf shape itself.
+     */
+    private static RexNode tryIndependentConjunctRewrite(
+        List<RexNode> arrayConjuncts,
+        ExprTreeBuilder builder,
+        int arrayCol,
+        RelDataType inputRowType,
+        RexBuilder rexBuilder
+    ) {
+        List<RexNode> leaves = new ArrayList<>(arrayConjuncts.size());
         for (RexNode conjunct : arrayConjuncts) {
             Map<String, Object> tree = builder.build(conjunct);
             if (tree == null) {
                 return null; // unsupported shape somewhere in this conjunct — fall back entirely
             }
-            arrayTrees.add(tree);
+            RexNode leaf = buildAnyMatchExprCall(tree, arrayCol, inputRowType, rexBuilder);
+            if (leaf == null) {
+                return null; // serialization failed — fall back entirely
+            }
+            leaves.add(leaf);
         }
+        return rexBuilder.makeCall(rexBuilder.getTypeFactory().createSqlType(SqlTypeName.BOOLEAN), org.apache.calcite.sql.fun.SqlStdOperatorTable.AND, leaves);
+    }
 
-        Map<String, Object> combinedTree = arrayTrees.size() == 1
-            ? arrayTrees.get(0)
-            : Map.of("op", "AND", "args", arrayTrees);
-
+    /** Builds a single {@code NESTED_ANY_MATCH_EXPR(arrayCol, jsonTree)} call, or {@code null} if
+     *  the tree can't be serialized. */
+    private static RexNode buildAnyMatchExprCall(Map<String, Object> tree, int arrayCol, RelDataType inputRowType, RexBuilder rexBuilder) {
         String json;
         try {
-            json = com.fasterxml.jackson.databind.json.JsonMapper.builder().build().writeValueAsString(combinedTree);
+            json = com.fasterxml.jackson.databind.json.JsonMapper.builder().build().writeValueAsString(tree);
         } catch (Exception e) {
             LOGGER.warn("[NESTED-LAMBDA] failed to serialize expr tree, falling back to unnest", e);
             return null;
         }
         RexNode arrayRef = rexBuilder.makeInputRef(inputRowType.getFieldList().get(arrayCol).getType(), arrayCol);
         RexNode exprLit = rexBuilder.makeLiteral(json);
-        RexNode anyMatchCall = rexBuilder.makeCall(
-            rexBuilder.getTypeFactory().createSqlType(SqlTypeName.BOOLEAN),
-            NESTED_ANY_MATCH_EXPR_OP,
-            List.of(arrayRef, exprLit)
-        );
-
-        return combineWithParentConjuncts(anyMatchCall, parentConjuncts, rexBuilder);
-    }
-
-    /**
-     * See {@link #INDEPENDENT_CONJUNCT_ROUTING_PROPERTY}: rewrites each array-referencing conjunct to
-     * its OWN independent leaf instead of fusing them into one joint tree. A keyword-equality conjunct
-     * becomes {@code NESTED_ANY_MATCH} (dual-viable, Lucene-delegable); anything else becomes its own
-     * single-conjunct {@code NESTED_ANY_MATCH_EXPR} (DataFusion-only). ANDs all the resulting leaves
-     * together. Returns {@code null} (triggering the generic joint-tree path) if any conjunct's tree
-     * can't be built at all — same fallback contract as {@link #tryLambdaRewrite}.
-     *
-     * <p>Each leaf is independently viable/annotated by the marking rules downstream exactly like
-     * independent flat-column conjuncts are — this is what makes each conjunct reach its own
-     * appropriate backend, at the deliberate cost of joint per-element correctness (see the flag's
-     * javadoc).
-     */
-    private static RexNode tryIndependentConjunctRewrite(
-        List<RexNode> arrayConjuncts,
-        int arrayCol,
-        RelDataType inputRowType,
-        RexBuilder rexBuilder
-    ) {
-        ExprTreeBuilder builder = new ExprTreeBuilder(arrayCol, inputRowType);
-        List<RexNode> leaves = new ArrayList<>(arrayConjuncts.size());
-        for (RexNode conjunct : arrayConjuncts) {
-            RexNode directMatch = tryDirectEqualityRewrite(conjunct, arrayCol, inputRowType, rexBuilder);
-            if (directMatch != null) {
-                leaves.add(directMatch);
-                continue;
-            }
-            Map<String, Object> tree = builder.build(conjunct);
-            if (tree == null) {
-                return null; // unsupported shape somewhere in this conjunct — fall back entirely
-            }
-            RexNode leaf = singleConjunctAnyMatchExpr(tree, arrayCol, inputRowType, rexBuilder);
-            if (leaf == null) {
-                return null; // serialization failed — fall back entirely
-            }
-            leaves.add(leaf);
-        }
-        if (leaves.size() == 1) {
-            return leaves.get(0);
-        }
-        return rexBuilder.makeCall(rexBuilder.getTypeFactory().createSqlType(SqlTypeName.BOOLEAN), org.apache.calcite.sql.fun.SqlStdOperatorTable.AND, leaves);
-    }
-
-    /** Builds a single-conjunct {@code NESTED_ANY_MATCH_EXPR(arrayCol, jsonTree)} call, or {@code null}
-     *  if the tree can't be serialized. */
-    private static RexNode singleConjunctAnyMatchExpr(Map<String, Object> tree, int arrayCol, RelDataType inputRowType, RexBuilder rexBuilder) {
-        String json;
-        try {
-            json = com.fasterxml.jackson.databind.json.JsonMapper.builder().build().writeValueAsString(tree);
-        } catch (Exception e) {
-            LOGGER.warn("[NESTED-LAMBDA] failed to serialize independent-conjunct expr tree", e);
-            return null;
-        }
-        RexNode arrayRef = rexBuilder.makeInputRef(inputRowType.getFieldList().get(arrayCol).getType(), arrayCol);
-        RexNode exprLit = rexBuilder.makeLiteral(json);
         return rexBuilder.makeCall(
             rexBuilder.getTypeFactory().createSqlType(SqlTypeName.BOOLEAN),
             NESTED_ANY_MATCH_EXPR_OP,
@@ -577,74 +564,7 @@ public final class OpenSearchNestedFieldRewriter {
     }
 
     /**
-     * Fast-path check: if {@code conjunct} is exactly {@code ITEM($arrayCol,'field') = 'literal'}
-     * (either operand order) with a STRING literal value, emits {@code NESTED_ANY_MATCH(arrayCol,
-     * 'field', 'EQUALS', 'literal')} — the flat 4-arg predecessor of {@code NESTED_ANY_MATCH_EXPR}
-     * (see {@link #NESTED_ANY_MATCH_OP}'s javadoc). This shape is registered as a dual-viable
-     * [lucene, datafusion] filter capability, enabling performance-delegation to Lucene's native
-     * nested block-join query, unlike the always-DataFusion-only {@code NESTED_ANY_MATCH_EXPR}.
-     *
-     * <p>Deliberately restricted to a STRING-literal comparison value: only keyword-typed nested
-     * leaves make sense as a Lucene term lookup in this composite (parquet+lucene) setup, and no
-     * leaf-level field-type info is available at this point — nested leaf fields have no entry in
-     * {@code FieldStorageResolver} (it explicitly skips {@code "nested"}-typed fields). Requiring a
-     * string literal is the same conservative heuristic this class already uses elsewhere ({@code
-     * ItemFinder}/{@code ExprTreeBuilder}) to infer "this looks like a keyword comparison" without
-     * real type resolution. A numeric/boolean-literal comparison falls through to the generic
-     * {@code NESTED_ANY_MATCH_EXPR} path unchanged, staying DataFusion-only rather than risk
-     * mis-registering a Lucene capability for a field Lucene doesn't actually index in this format.
-     *
-     * <p>Only {@code EQUALS} is handled (not {@code NOT_EQUALS}) — a nested "field != value"
-     * existence check has no Lucene query primitive as simple as a single {@code TermQuery} and
-     * isn't needed for the common case this fast path targets. Returns {@code null} for anything
-     * else (including {@code NOT_EQUALS}, non-comparison kinds, or a non-string literal), which
-     * triggers the generic path in the caller.
-     */
-    private static RexNode tryDirectEqualityRewrite(RexNode conjunct, int arrayCol, RelDataType inputRowType, RexBuilder rexBuilder) {
-        if (conjunct.getKind() != SqlKind.EQUALS || !(conjunct instanceof RexCall call) || call.getOperands().size() != 2) {
-            return null;
-        }
-        RexNode left = call.getOperands().get(0);
-        RexNode right = call.getOperands().get(1);
-
-        RexCall itemCall;
-        RexLiteral valueLit;
-        if (isItemOnArray(left, arrayCol) && right instanceof RexLiteral lit) {
-            itemCall = (RexCall) left;
-            valueLit = lit;
-        } else if (isItemOnArray(right, arrayCol) && left instanceof RexLiteral lit) {
-            itemCall = (RexCall) right;
-            valueLit = lit;
-        } else {
-            return null;
-        }
-        if (valueLit.getTypeName() != SqlTypeName.CHAR && valueLit.getTypeName() != SqlTypeName.VARCHAR) {
-            return null; // not a string comparison — leave for the generic path
-        }
-        RexNode fieldNameNode = itemCall.getOperands().get(1);
-        if (!(fieldNameNode instanceof RexLiteral fieldLit) || fieldLit.getTypeName() != SqlTypeName.CHAR) {
-            return null;
-        }
-        String fieldName = fieldLit.getValueAs(String.class);
-        String value = valueLit.getValueAs(String.class);
-
-        RexNode arrayRef = rexBuilder.makeInputRef(inputRowType.getFieldList().get(arrayCol).getType(), arrayCol);
-        return rexBuilder.makeCall(
-            rexBuilder.getTypeFactory().createSqlType(SqlTypeName.BOOLEAN),
-            NESTED_ANY_MATCH_OP,
-            List.of(arrayRef, rexBuilder.makeLiteral(fieldName), rexBuilder.makeLiteral("EQUALS"), rexBuilder.makeLiteral(value))
-        );
-    }
-
-    /** True if {@code node} is exactly {@code ITEM($arrayCol, <anything>)}. */
-    private static boolean isItemOnArray(RexNode node, int arrayCol) {
-        if (!(node instanceof RexCall call) || !"ITEM".equals(call.getOperator().getName()) || call.getOperands().size() != 2) {
-            return false;
-        }
-        return call.getOperands().get(0) instanceof RexInputRef ref && ref.getIndex() == arrayCol;
-    }
-
-    /** ANDs {@code arrayCall} together with any parent-only conjuncts (passed through unchanged,
+     * ANDs {@code arrayCall} together with any parent-only conjuncts (passed through unchanged,
      *  since they're independent per-row and don't need per-element evaluation); returns {@code
      *  arrayCall} directly when there are none. */
     private static RexNode combineWithParentConjuncts(RexNode arrayCall, List<RexNode> parentConjuncts, RexBuilder rexBuilder) {

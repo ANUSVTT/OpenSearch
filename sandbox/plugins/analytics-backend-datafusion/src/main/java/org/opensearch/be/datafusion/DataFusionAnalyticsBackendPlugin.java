@@ -125,7 +125,6 @@ public class DataFusionAnalyticsBackendPlugin implements AnalyticsSearchBackendP
         // json_valid(col)` / `where not json_valid(col)`). DataFusion evaluates the json_valid Rust
         // UDF natively; same shape as CIDRMATCH.
         ScalarFunction.JSON_VALID,
-        ScalarFunction.NESTED_ANY_MATCH,
         ScalarFunction.NESTED_ANY_MATCH_EXPR
     );
 
@@ -601,8 +600,8 @@ public class DataFusionAnalyticsBackendPlugin implements AnalyticsSearchBackendP
                     // emits a value-typed scalar before substrait emission.
                     caps.add(new FilterCapability.Standard(op, Set.of(FieldType.MAP), formats));
                     // ARRAY-typed fields enter the filter rule when the rewriter emits
-                    // NESTED_ANY_MATCH(arrayCol, ...). The filter-rule's field-index collection sees
-                    // the underlying ARRAY column; without this the WHERE rejects with
+                    // NESTED_ANY_MATCH_EXPR(arrayCol, ...). The filter-rule's field-index collection
+                    // sees the underlying ARRAY column; without this the WHERE rejects with
                     // "No backend can evaluate filter predicate [...] on fields [<col>:ARRAY]".
                     caps.add(new FilterCapability.Standard(op, Set.of(FieldType.ARRAY), formats));
                 }

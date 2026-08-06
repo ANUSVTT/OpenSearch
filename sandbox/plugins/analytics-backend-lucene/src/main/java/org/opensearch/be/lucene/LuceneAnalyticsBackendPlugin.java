@@ -117,15 +117,15 @@ public class LuceneAnalyticsBackendPlugin implements AnalyticsSearchBackendPlugi
 
     private static final Set<FieldType> KEYWORD_ONLY = Set.of(FieldType.KEYWORD);
 
-    // NESTED_ANY_MATCH(arrayCol, field, op, value): the flat equality shape
-    // OpenSearchNestedFieldRewriter's fast path emits for a standalone
-    // `comments.author = "alice"`-style predicate (see its javadoc). Registered on ARRAY
-    // (not STANDARD_TYPES — the array COLUMN's Calcite type, not the leaf field's type; no
-    // leaf-level type info is available at this point, so the rewriter's own string-literal
-    // check is what keeps this to keyword-shaped comparisons). This makes the leaf dual-viable
-    // [lucene, datafusion], enabling performance-delegation the same way a flat EQUALS predicate
-    // is delegated today — see NestedAnyMatchSerializer.
-    private static final Set<ScalarFunction> NESTED_OPS = Set.of(ScalarFunction.NESTED_ANY_MATCH);
+    // NESTED_ANY_MATCH_EXPR(arrayCol, jsonExprTree): the generic per-element predicate
+    // OpenSearchNestedFieldRewriter emits for ANY predicate shape on a single array column
+    // (see its javadoc). Registered on ARRAY here — the array COLUMN's Calcite type, not any
+    // leaf field's type — as a STATIC capability declaration; this alone only says Lucene MAY
+    // be viable. Whether a given instance actually is depends on the JSON tree's shape (Lucene
+    // can only translate a single string-equality leaf into a native TermQuery), which is
+    // decided per-call by NestedAnyMatchExprSerializer#canServe, consulted from
+    // OpenSearchFilterRule.resolveViableBackends.
+    private static final Set<ScalarFunction> NESTED_OPS = Set.of(ScalarFunction.NESTED_ANY_MATCH_EXPR);
     private static final Set<FieldType> NESTED_FILTER_TYPES = Set.of(FieldType.ARRAY);
 
     private static final Set<FilterCapability> FILTER_CAPS;
@@ -285,7 +285,7 @@ public class LuceneAnalyticsBackendPlugin implements AnalyticsSearchBackendPlugi
      * directly, bypassing {@code BitsetFilterCache}/{@code IndicesBitsetFilterCache} entirely.
      * {@link org.opensearch.index.query.NestedQueryBuilder#doToQuery} calls {@code context.bitsetFilter(...)} to get a
      * parent-doc {@code BitSetProducer} for the {@code ToParentBlockJoinQuery} it builds (needed
-     * by {@link org.opensearch.be.lucene.serializers.NestedAnyMatchSerializer}'s
+     * by {@link org.opensearch.be.lucene.serializers.NestedAnyMatchExprSerializer}'s
      * performance-delegation query for nested equality predicates); the base class's {@code
      * bitsetFilterCache} field has no shard-level {@code IndicesBitsetFilterCache} available in
      * this per-fragment, delegated-predicate-compilation context ({@code

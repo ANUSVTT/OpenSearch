@@ -285,6 +285,17 @@ public class OpenSearchFilterRule extends RelOptRule {
             viableSet.retainAll(fieldViable);
         }
 
+        // Static (function, fieldType) registration alone can be too coarse to decide viability for
+        // some functions (e.g. NESTED_ANY_MATCH_EXPR, whose RexCall carries an arbitrary JSON-tree
+        // operand) — give each still-viable backend's serializer a chance to inspect the actual call
+        // and narrow further. Backends without a serializer, or whose serializer doesn't override
+        // canServe, are unaffected (default true). This can only NARROW viableSet, never grant
+        // viability the static check didn't already establish.
+        viableSet.removeIf(candidateName -> {
+            DelegatedPredicateSerializer serializer = registry.getBackend(candidateName).delegatedPredicateSerializers().get(function);
+            return serializer != null && !serializer.canServe(predicate, fieldStorageInfos);
+        });
+
         // Every nested scalar function in the predicate must also be evaluable by a candidate backend
         for (RexCall scalarFunctionCall : contents.scalarFunctionCalls()) {
             // Calcite-internal value constructors (named-parameter MAP/ARRAY/ROW used by full-text
