@@ -125,7 +125,17 @@ public class LuceneAnalyticsBackendPlugin implements AnalyticsSearchBackendPlugi
     // can only translate a single string-equality leaf into a native TermQuery), which is
     // decided per-call by NestedAnyMatchExprSerializer#canServe, consulted from
     // OpenSearchFilterRule.resolveViableBackends.
-    private static final Set<ScalarFunction> NESTED_OPS = Set.of(ScalarFunction.NESTED_ANY_MATCH_EXPR);
+    // NESTED_ANY_MATCH_CHILD(arrayCol, field, op, value, clauseIdx): the CHILD-GRAIN sibling
+    // OpenSearchNestedFieldRewriter emits (under the child-grain-split flag) for a keyword-equality
+    // conjunct that is fused with a range/other conjunct on the same nested array. Same ARRAY-type
+    // capability so it is marked dual-viable [lucene, datafusion]; the serializer ships a
+    // CHILD-scoped query (see NestedAnyMatchChildSerializer) so the peer bitset is child-element
+    // grain, letting the residual NESTED_ANY_MATCH_EXPR intersect the Lucene keyword clause and the
+    // DataFusion range clause at the SAME element before ∃ roll-up.
+    private static final Set<ScalarFunction> NESTED_OPS = Set.of(
+        ScalarFunction.NESTED_ANY_MATCH_EXPR,
+        ScalarFunction.NESTED_ANY_MATCH_CHILD
+    );
     private static final Set<FieldType> NESTED_FILTER_TYPES = Set.of(FieldType.ARRAY);
 
     private static final Set<FilterCapability> FILTER_CAPS;
