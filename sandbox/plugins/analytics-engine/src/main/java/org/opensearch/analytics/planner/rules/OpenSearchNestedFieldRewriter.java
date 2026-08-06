@@ -537,19 +537,23 @@ public final class OpenSearchNestedFieldRewriter {
 
             // ── CHILD-GRAIN split (opt-in) ──────────────────────────────────────────────────
             // When enabled, each keyword-equality conjunct that Lucene can evaluate is REPLACED in
-            // the JSON tree by a {"lucene": <clauseIdx>} node and paired with a
-            // NESTED_ANY_MATCH_CHILD peer. The executor evaluates the residual (with the
-            // range/other clauses on the decoded array) and, at the {"lucene"} node, consumes the
-            // Lucene peer's per-element verdict — so keyword (Lucene) and range (DataFusion)
-            // intersect at the SAME element before the ∃ roll-up. childPeers[i] pairs with clause
-            // index i. Only fires in the compound (>1) path.
+            // the JSON tree by a {"lucene": <clauseIdx>, "fallback": <original subtree>} node and
+            // paired with a NESTED_ANY_MATCH_CHILD peer. The executor evaluates the residual (with
+            // the range/other clauses on the decoded array) and, at the {"lucene"} node, consumes
+            // the Lucene peer's per-element verdict when the child-grain executor actually supplies
+            // it — so keyword (Lucene) and range (DataFusion) intersect at the SAME element before
+            // the ∃ roll-up. When no bits are supplied (the plain UDF path, or a Tree/OR-NOT plan
+            // where the peer was demoted to native), the node evaluates "fallback" natively instead —
+            // so NESTED_ANY_MATCH_EXPR stays correct on EVERY path and Lucene is a pure accelerant,
+            // never a correctness dependency. childPeers[i] pairs with clause index i. Only fires in
+            // the compound (>1) path.
             List<RexNode> childPeers = new ArrayList<>();
             if (arrayConjuncts.size() > 1 && childGrainSplitEnabled()) {
                 for (int i = 0; i < arrayConjuncts.size(); i++) {
                     RexNode peer = tryDirectEqualityChildRewrite(arrayConjuncts.get(i), arrayCol, inputRowType, rexBuilder, childPeers.size());
                     if (peer != null) {
-                        // Replace this conjunct's JSON subtree with a lucene-delegated marker at the peer's index.
-                        arrayTrees.set(i, Map.of("lucene", childPeers.size()));
+                        Map<String, Object> luceneNode = Map.of("lucene", childPeers.size(), "fallback", arrayTrees.get(i));
+                        arrayTrees.set(i, luceneNode);
                         childPeers.add(peer);
                     }
                 }
