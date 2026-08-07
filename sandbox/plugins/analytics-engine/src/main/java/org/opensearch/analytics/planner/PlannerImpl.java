@@ -488,11 +488,18 @@ public class PlannerImpl {
                     new OpenSearchSortRule(context),
                     new OpenSearchUnionRule(context),
                     new OpenSearchValuesRule(context),
-                    // [NESTED] Mark the Correlate+Uncollect (UNNEST) nodes the generic nested rewrite
-                    // injects → forced to the DataFusion backend. Harmless no-ops when the flag is off
-                    // (no such nodes exist in the tree, so the rules never match).
+                    // [NESTED] Mark the Correlate+Uncollect (UNNEST) PPL `expand` emits DIRECTLY from
+                    // the frontend (a distinct code path from the generic nested rewrite below) →
+                    // forced to the DataFusion backend. Harmless no-op when there's no `expand` in the
+                    // query (no such nodes exist in the tree, so the rules never match).
                     new org.opensearch.analytics.planner.rules.OpenSearchCorrelateRule(context),
-                    new org.opensearch.analytics.planner.rules.OpenSearchUncollectRule(context)
+                    new org.opensearch.analytics.planner.rules.OpenSearchUncollectRule(context),
+                    // [NESTED] Mark the LogicalNestedScope (UNNEST) node the generic nested rewrite
+                    // injects for genuine grain-change cases (e.g. `stats count() by comments.author`)
+                    // — viable backends come from a real NESTED_SCOPE capability lookup, not a hardcoded
+                    // backend name. Harmless no-op when the flag is off (no such node exists in the
+                    // tree, so the rule never matches).
+                    new org.opensearch.analytics.planner.rules.OpenSearchNestedScopeRule(context)
                 )
             )
             .run(input, listener);

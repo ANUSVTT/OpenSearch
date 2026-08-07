@@ -30,6 +30,7 @@ import org.opensearch.analytics.planner.rel.OpenSearchDistributionTraitDef;
 import org.opensearch.analytics.planner.rel.OpenSearchExchangeReducer;
 import org.opensearch.analytics.planner.rel.OpenSearchFilter;
 import org.opensearch.analytics.planner.rel.OpenSearchJoin;
+import org.opensearch.analytics.planner.rel.OpenSearchNestedScope;
 import org.opensearch.analytics.planner.rel.OpenSearchProject;
 import org.opensearch.analytics.planner.rel.OpenSearchSort;
 import org.opensearch.analytics.planner.rel.OpenSearchTableScan;
@@ -154,6 +155,16 @@ public class RelNodeUtils {
                 newInputs.getFirst(),
                 reducer.getViableBackends(),
                 reducer.getExchangeInfo()
+            );
+        } else if (node instanceof OpenSearchNestedScope nestedScope) {
+            // [NESTED] Generic nested rewrite's UNNEST for genuine grain-change cases (e.g.
+            // `stats count() by comments.author`) — distinct from the `expand`-emitted Correlate above.
+            return new OpenSearchNestedScope(
+                newCluster,
+                newTraits,
+                newInputs.getFirst(),
+                nestedScope.getArrayColumnIndex(),
+                nestedScope.getViableBackends()
             );
         }
 

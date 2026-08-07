@@ -12,15 +12,10 @@ import org.apache.calcite.plan.RelOptCluster;
 import org.apache.calcite.plan.RelOptUtil;
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.RelShuttleImpl;
-import org.apache.calcite.rel.core.CorrelationId;
-import org.apache.calcite.rel.core.JoinRelType;
 import org.apache.calcite.rel.core.AggregateCall;
-import org.apache.calcite.rel.core.Uncollect;
 import org.apache.calcite.rel.logical.LogicalAggregate;
-import org.apache.calcite.rel.logical.LogicalCorrelate;
 import org.apache.calcite.rel.logical.LogicalFilter;
 import org.apache.calcite.rel.logical.LogicalProject;
-import org.apache.calcite.rel.logical.LogicalValues;
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rel.type.RelDataTypeField;
 import org.apache.calcite.rex.RexBuilder;
@@ -35,9 +30,9 @@ import org.apache.calcite.sql.SqlKind;
 import org.apache.calcite.sql.type.OperandTypes;
 import org.apache.calcite.sql.type.ReturnTypes;
 import org.apache.calcite.sql.type.SqlTypeName;
-import org.apache.calcite.util.ImmutableBitSet;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.opensearch.analytics.planner.rel.LogicalNestedScope;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -58,16 +53,18 @@ import java.util.Map;
  * contains the {@code ITEM} — handling Project + Filter also covers aggregates.
  *
  * <p><b>What it does.</b> Walking the tree, at each Project/Filter whose expressions reference an
- * array column via {@code ITEM}, it injects the textbook Calcite UNNEST shape beneath that node:
+ * array column via {@code ITEM}, it injects the backend-neutral unnest operator beneath that node:
  * <pre>
- *   LogicalCorrelate(INNER, requiredColumns={arrayCol})
- *     ├─ &lt;original input&gt;                              (all original columns, indices UNCHANGED)
- *     └─ Uncollect( Project($cor0.arrayCol, LogicalValues.oneRow) )   (struct fields, APPENDED)
+ *   LogicalNestedScope(path=arrayCol)
+ *     └─ &lt;original input&gt;    (all original columns, indices UNCHANGED; struct fields APPENDED)
  * </pre>
- * and rewrites each {@code ITEM($arrayCol,'f')} to a plain {@link RexInputRef} of the appended
- * unnested column. Because the correlate keeps the left (original) columns first and appends the
- * exploded struct fields, <b>every original column index is preserved</b> — so operators above the
- * rewritten node are unaffected and the transform composes cleanly across the whole tree.
+ * (see {@link org.opensearch.analytics.planner.rel.LogicalNestedScope} for the row-type contract —
+ * it is Calcite-shape-equivalent to the {@code Correlate(left, Uncollect(...))} it replaces, just
+ * marked/routed by a real capability lookup instead of a hardcoded backend name) and rewrites each
+ * {@code ITEM($arrayCol,'f')} to a plain {@link RexInputRef} of the appended unnested column.
+ * Because the scope keeps the original columns first and appends the exploded struct fields,
+ * <b>every original column index is preserved</b> — so operators above the rewritten node are
+ * unaffected and the transform composes cleanly across the whole tree.
  *
  * <p>For a {@link LogicalFilter}, the appended unnested columns are projected away again above the
  * filter so the row type is restored to the parent's shape (returning parent rows). NOTE: parent
@@ -307,8 +304,8 @@ public final class OpenSearchNestedFieldRewriter {
 
     /**
      * Rewrites {@code ITEM($arrayCol,'field')} references in {@code project}'s expressions to
-     * columns of an injected Correlate+Uncollect (the original, child-grain unnest path). Used when
-     * the Aggregate-input guard determines a genuine grain change is required.
+     * columns of an injected {@code LogicalNestedScope} (the original, child-grain unnest path). Used
+     * when the Aggregate-input guard determines a genuine grain change is required.
      */
     private static RelNode rewriteProjectViaUnnest(LogicalProject project) {
         RelNode input = project.getInput();
@@ -322,12 +319,12 @@ public final class OpenSearchNestedFieldRewriter {
         if (u == null) {
             return project;
         }
-        ItemRewriteShuttle shuttle = new ItemRewriteShuttle(arrayCol, u.unnestedFieldIndex, rexBuilder, u.correlate.getRowType());
+        ItemRewriteShuttle shuttle = new ItemRewriteShuttle(arrayCol, u.unnestedFieldIndex, rexBuilder, u.nestedScope.getRowType());
         List<RexNode> newExprs = new ArrayList<>(project.getProjects().size());
         for (RexNode e : project.getProjects()) {
             newExprs.add(e.accept(shuttle));
         }
-        return LogicalProject.create(u.correlate, List.of(), newExprs, project.getRowType().getFieldNames());
+        return LogicalProject.create(u.nestedScope, List.of(), newExprs, project.getRowType().getFieldNames());
     }
 
     /**
@@ -402,23 +399,23 @@ public final class OpenSearchNestedFieldRewriter {
             return LogicalFilter.create(input, lambdaCondition);
         }
 
-        // Fallback: inject Correlate+Uncollect (the old unnest path).
+        // Fallback: inject LogicalNestedScope (the old unnest path).
         LOGGER.info("[NESTED] filter lambda-rewrite not applicable, falling back to unnest path");
         int originalColCount = input.getRowType().getFieldCount();
         UnnestResult u = injectUnnest(input, arrayCol, cluster, rexBuilder);
         if (u == null) {
             return filter;
         }
-        ItemRewriteShuttle shuttle = new ItemRewriteShuttle(arrayCol, u.unnestedFieldIndex, rexBuilder, u.correlate.getRowType());
+        ItemRewriteShuttle shuttle = new ItemRewriteShuttle(arrayCol, u.unnestedFieldIndex, rexBuilder, u.nestedScope.getRowType());
         RexNode newCondition = filter.getCondition().accept(shuttle);
-        RelNode newFilter = LogicalFilter.create(u.correlate, newCondition);
+        RelNode newFilter = LogicalFilter.create(u.nestedScope, newCondition);
 
         List<RexNode> passthrough = new ArrayList<>(originalColCount);
         List<String> names = new ArrayList<>(originalColCount);
-        List<RelDataTypeField> corrFields = u.correlate.getRowType().getFieldList();
+        List<RelDataTypeField> scopeFields = u.nestedScope.getRowType().getFieldList();
         for (int i = 0; i < originalColCount; i++) {
-            passthrough.add(rexBuilder.makeInputRef(corrFields.get(i).getType(), i));
-            names.add(corrFields.get(i).getName());
+            passthrough.add(rexBuilder.makeInputRef(scopeFields.get(i).getType(), i));
+            names.add(scopeFields.get(i).getName());
         }
         return LogicalProject.create(newFilter, List.of(), passthrough, names);
     }
@@ -732,15 +729,18 @@ public final class OpenSearchNestedFieldRewriter {
         }
     }
 
-    // ---- Shared: build Correlate(input, Uncollect(array)) appending the struct fields ----------
+    // ---- Shared: build LogicalNestedScope(input, arrayCol) appending the struct fields ----------
 
-    /** Result of injecting an unnest: the new Correlate rel + the index where unnested fields begin. */
-    private record UnnestResult(LogicalCorrelate correlate, int unnestedFieldIndex, Map<String, Integer> fieldToIndex) {}
+    /** Result of injecting an unnest: the new NestedScope rel + the index where unnested fields begin. */
+    private record UnnestResult(LogicalNestedScope nestedScope, int unnestedFieldIndex, Map<String, Integer> fieldToIndex) {}
 
     /**
-     * Injects {@code Correlate(input, Uncollect(Project($cor0.arrayCol, oneRow)))}. The correlate's
-     * output is {@code [original cols..., unnested struct fields...]} — original indices preserved,
-     * struct fields appended starting at {@code input.fieldCount}.
+     * Injects {@code LogicalNestedScope(input, arrayCol)} — the backend-neutral "expand this array,
+     * keep parent identity" operator (see that class's javadoc); marked into {@code
+     * OpenSearchNestedScope} later by {@code OpenSearchNestedScopeRule} during the marking phase, with
+     * viable backends computed from a real capability lookup rather than hardcoded. Output is
+     * {@code [original cols..., unnested struct fields...]} — original indices preserved, struct
+     * fields appended starting at {@code input.fieldCount}.
      */
     private static UnnestResult injectUnnest(RelNode input, int arrayCol, RelOptCluster cluster, RexBuilder rexBuilder) {
         RelDataType inputRowType = input.getRowType();
@@ -751,38 +751,23 @@ public final class OpenSearchNestedFieldRewriter {
             return null;
         }
 
-        CorrelationId correlId = cluster.createCorrel();
-        RexNode correlVar = rexBuilder.makeCorrel(inputRowType, correlId);
-        RexNode correlArrayAccess = rexBuilder.makeFieldAccess(correlVar, arrayCol);
-
-        RelNode oneRow = LogicalValues.createOneRow(cluster);
-        RelNode rightProject = LogicalProject.create(oneRow, List.of(), List.of(correlArrayAccess), List.of(arrayField.getName()));
-        RelNode uncollect = Uncollect.create(rightProject.getTraitSet(), rightProject, false, List.of());
-
-        LogicalCorrelate correlate = LogicalCorrelate.create(
-            input,
-            uncollect,
-            List.of(),
-            correlId,
-            ImmutableBitSet.of(arrayCol),
-            JoinRelType.INNER
-        );
+        LogicalNestedScope nestedScope = LogicalNestedScope.create(input, arrayCol);
 
         int originalColCount = inputRowType.getFieldCount();
         Map<String, Integer> fieldToIndex = new LinkedHashMap<>();
-        List<RelDataTypeField> corrFields = correlate.getRowType().getFieldList();
-        for (int i = originalColCount; i < corrFields.size(); i++) {
-            fieldToIndex.put(corrFields.get(i).getName(), i);
+        List<RelDataTypeField> scopeFields = nestedScope.getRowType().getFieldList();
+        for (int i = originalColCount; i < scopeFields.size(); i++) {
+            fieldToIndex.put(scopeFields.get(i).getName(), i);
         }
         LOGGER.info(
-            "[NESTED] injected UNNEST on array col '{}' (idx {}); unnested fields {} at indices {}..{}",
+            "[NESTED] injected NestedScope UNNEST on array col '{}' (idx {}); unnested fields {} at indices {}..{}",
             arrayField.getName(),
             arrayCol,
             fieldToIndex.keySet(),
             originalColCount,
-            corrFields.size() - 1
+            scopeFields.size() - 1
         );
-        return new UnnestResult(correlate, originalColCount, fieldToIndex);
+        return new UnnestResult(nestedScope, originalColCount, fieldToIndex);
     }
 
     // ---- ITEM detection + rewriting ------------------------------------------------------------

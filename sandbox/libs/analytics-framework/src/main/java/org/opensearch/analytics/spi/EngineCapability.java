@@ -22,5 +22,13 @@ package org.opensearch.analytics.spi;
 public enum EngineCapability {
     SORT,
     UNION,
-    VALUES
+    VALUES,
+    /**
+     * Expanding a nested/array column into per-child rows while retaining parent identity — the
+     * genuine grain-change case (e.g. PPL {@code stats count() by comments.author}), represented
+     * by {@code OpenSearchNestedScope} in the planner. Distinct from per-element predicate
+     * evaluation ({@code NESTED_ANY_MATCH_EXPR}, a {@link FilterCapability}), which never changes
+     * row count and so needs no operator-level capability at all.
+     */
+    NESTED_SCOPE
 }

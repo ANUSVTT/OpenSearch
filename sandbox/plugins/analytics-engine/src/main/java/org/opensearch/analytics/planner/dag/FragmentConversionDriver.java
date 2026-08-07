@@ -297,14 +297,20 @@ public class FragmentConversionDriver {
     }
 
     /**
-     * [NESTED] True if the fragment contains an UNNEST ({@link org.apache.calcite.rel.core.Uncollect},
-     * possibly the marked {@code OpenSearchUncollect}) — i.e. the generic nested-field rewrite injected
-     * a {@code Correlate + Uncollect}. Such plans reference the physical {@code __row_id__} for
-     * parent de-duplication/grouping, which is computed shard-globally only by the indexed executor;
-     * so we request row ids to select it (same reason as QTF, generalised to the generic nested path).
+     * [NESTED] True if the fragment contains an UNNEST — either {@link
+     * org.apache.calcite.rel.core.Uncollect} (possibly the marked {@code OpenSearchUncollect}, from
+     * PPL {@code expand}'s frontend-emitted {@code Correlate+Uncollect}) or {@link
+     * org.opensearch.analytics.planner.rel.OpenSearchNestedScope} (the generic nested-field rewrite's
+     * grain-change unnest, marked via a real capability lookup instead of hardcoded). Such plans
+     * reference the physical {@code __row_id__} for parent de-duplication/grouping, which is computed
+     * shard-globally only by the indexed executor; so we request row ids to select it (same reason as
+     * QTF, generalised to the generic nested path).
      */
     private static boolean containsUnnest(RelNode root) {
-        if (root instanceof org.apache.calcite.rel.core.Uncollect) return true;
+        if (root instanceof org.apache.calcite.rel.core.Uncollect
+            || root instanceof org.opensearch.analytics.planner.rel.OpenSearchNestedScope) {
+            return true;
+        }
         for (RelNode child : root.getInputs()) {
             if (containsUnnest(child)) return true;
         }

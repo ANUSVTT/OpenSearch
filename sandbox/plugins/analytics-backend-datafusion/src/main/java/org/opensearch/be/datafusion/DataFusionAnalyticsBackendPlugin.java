@@ -73,7 +73,17 @@ public class DataFusionAnalyticsBackendPlugin implements AnalyticsSearchBackendP
 
     private static final Logger LOGGER = LogManager.getLogger(DataFusionAnalyticsBackendPlugin.class);
 
-    private static final Set<EngineCapability> ENGINE_CAPS = Set.of(EngineCapability.SORT, EngineCapability.UNION, EngineCapability.VALUES);
+    // NESTED_SCOPE: DataFusion lowers OpenSearchNestedScope to the existing unnest_reshape
+    // ExtensionSingleRel (see DataFusionFragmentConvertor's visit(OpenSearchNestedScope) override) —
+    // it reads Parquet LIST<STRUCT> columns and can natively explode them into child rows. Lucene
+    // registers no such capability yet — see OpenSearchNestedScope's javadoc for why (no bucket/
+    // group-by execution path exists there today); it stays out of viableBackends until that lands.
+    private static final Set<EngineCapability> ENGINE_CAPS = Set.of(
+        EngineCapability.SORT,
+        EngineCapability.UNION,
+        EngineCapability.VALUES,
+        EngineCapability.NESTED_SCOPE
+    );
 
     private static final Set<FieldType> SUPPORTED_FIELD_TYPES = new HashSet<>();
     static {
