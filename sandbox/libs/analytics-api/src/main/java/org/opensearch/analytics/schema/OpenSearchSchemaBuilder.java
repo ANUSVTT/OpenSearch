@@ -299,7 +299,17 @@ public class OpenSearchSchemaBuilder {
             public RelDataType getRowType(RelDataTypeFactory typeFactory) {
                 RelDataTypeFactory.Builder builder = typeFactory.builder();
                 addLeafFields(builder, typeFactory, properties, "");
-                return builder.build();
+                RelDataType rowType = builder.build();
+                // [SCHEMA-DUMP] Log the exact Calcite row type served to the planner —
+                // the "schemaPlus" view of this table. Grep: SCHEMA-DUMP.
+                StringBuilder dump = new StringBuilder("[SCHEMA-DUMP] (MUSTANG) row type — ")
+                    .append(rowType.getFieldCount())
+                    .append(" columns:\n");
+                for (org.apache.calcite.rel.type.RelDataTypeField f : rowType.getFieldList()) {
+                    dump.append(String.format("  $%d  %-20s %s%n", f.getIndex(), f.getName(), f.getType().getFullTypeString()));
+                }
+                System.out.println(dump);
+                return rowType;
             }
         };
     }
