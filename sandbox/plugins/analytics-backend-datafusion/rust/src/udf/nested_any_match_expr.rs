@@ -342,6 +342,19 @@ fn eval_bool(
             let right = eval_value(&args[1], struct_array, struct_fields, elem_idx)?;
             Ok(compare(&left, op, &right))
         }
+        // IS NOT NULL / IS NULL ("exists" / a leaf field-reference's own presence check).
+        // Deliberately TWO-VALUED, never None: whether a value is present is never itself
+        // "unknown" — matching vanilla OpenSearch's `is not null`/`exists` semantics, and this
+        // evaluator's existing two-valued convention for nested existence/absence (see the
+        // "nested" descent above).
+        "EXISTS" | "NOT_EXISTS" => {
+            if args.len() != 1 {
+                return plan_err!("nested_any_match_expr: {op} expects 1 arg");
+            }
+            let value = eval_value(&args[0], struct_array, struct_fields, elem_idx)?;
+            let present = !is_null(&value);
+            Ok(Some(if op == "EXISTS" { present } else { !present }))
+        }
         other => plan_err!("nested_any_match_expr: '{other}' is not a boolean operator"),
     }
 }
@@ -628,6 +641,70 @@ mod tests {
         let array = comments_array(&[vec![], vec![("alice", 70)]]);
         let out = evaluate_nested_with_lucene(&array, split_json(), &[]).unwrap();
         assert_eq!(out, BooleanArray::from(vec![false, true]));
+    }
+
+    /// Like `comments_array` but with a NULLABLE score, for EXISTS/NOT_EXISTS tests. Each row is a
+    /// list of `(author, Option<score>)` elements; `None` score = null leaf.
+    fn comments_array_nullable_score(rows: &[Vec<(&str, Option<i64>)>]) -> ArrayRef {
+        let mut authors: Vec<Option<String>> = Vec::new();
+        let mut scores: Vec<Option<i64>> = Vec::new();
+        let mut offsets: Vec<i32> = vec![0];
+        let mut acc = 0i32;
+        for row in rows {
+            for (a, s) in row {
+                authors.push(Some((*a).to_string()));
+                scores.push(*s);
+            }
+            acc += row.len() as i32;
+            offsets.push(acc);
+        }
+        let struct_fields: Fields = Fields::from(vec![
+            Field::new("author", DataType::Utf8, true),
+            Field::new("score", DataType::Int64, true),
+        ]);
+        let struct_array = StructArray::new(
+            struct_fields.clone(),
+            vec![Arc::new(StringArray::from(authors)) as ArrayRef, Arc::new(Int64Array::from(scores)) as ArrayRef],
+            None,
+        );
+        let list_field = Arc::new(Field::new("item", DataType::Struct(struct_fields), true));
+        Arc::new(ListArray::new(list_field, OffsetBuffer::new(offsets.into()), Arc::new(struct_array), None)) as ArrayRef
+    }
+
+    #[test]
+    fn exists_matches_any_element_with_non_null_field() {
+        // P0: alice has a null score, bob has 90 -> EXISTS(score) true (bob's element has one).
+        // P1: alice has a null score only -> EXISTS(score) false (no element has one).
+        let array = comments_array_nullable_score(&[vec![("alice", None), ("bob", Some(90))], vec![("alice", None)]]);
+        let tree: Json = json!({"op": "EXISTS", "args": [{"field": "score"}]});
+        let out = evaluate_nested_any_match(&array, &tree, None).unwrap();
+        assert_eq!(out, BooleanArray::from(vec![true, false]));
+    }
+
+    #[test]
+    fn not_exists_matches_any_element_with_null_field() {
+        // P0: bob's score is null -> NOT_EXISTS(score) true (some element lacks it), even though
+        // alice's score IS present -> this is an ELEMENT-EXISTENTIAL check, not "all elements".
+        // P1: alice has 70 (no null) -> NOT_EXISTS(score) false.
+        let array = comments_array_nullable_score(&[vec![("alice", Some(5)), ("bob", None)], vec![("alice", Some(70))]]);
+        let tree: Json = json!({"op": "NOT_EXISTS", "args": [{"field": "score"}]});
+        let out = evaluate_nested_any_match(&array, &tree, None).unwrap();
+        assert_eq!(out, BooleanArray::from(vec![true, false]));
+    }
+
+    #[test]
+    fn exists_composes_with_nested_descent() {
+        // Deep EXISTS: {"nested":"kids","inner":{"op":"EXISTS","args":[{"field":"v"}]}} — reuses the
+        // depth-D nested-descent model (N/nd/leaf/leaf_null/deep_array, defined further below) to
+        // prove EXISTS composes through a {"nested":...} wrapper exactly like a comparison does.
+        // max_depth=2: each parent row has ONE level-1 element, whose "kids" holds ONE level-2 child;
+        // EXISTS(v) checks that level-2 child's own v.
+        let level1_with_present_child = nd(0, vec![leaf(1)]); // child v=Some(1) -> EXISTS true
+        let level1_with_absent_child = nd(0, vec![leaf_null()]); // child v=None -> EXISTS false
+        let array = deep_array(&[vec![level1_with_present_child], vec![level1_with_absent_child]], 2);
+        let tree: Json = json!({"nested": "kids", "inner": {"op": "EXISTS", "args": [{"field": "v"}]}});
+        let out = evaluate_nested_any_match(&array, &tree, None).unwrap();
+        assert_eq!(out, BooleanArray::from(vec![true, false]));
     }
 
     // ────────────────────────────────────────────────────────────────────────────────────────────

@@ -559,6 +559,15 @@ public final class OpenSearchNestedFieldRewriter {
                 }
             }
 
+            // Multiple conjuncts sharing the SAME nested-array prefix (e.g. `products.variants.specs.key=
+            // "weight" AND products.variants.specs.val>50`, both under products.variants.specs) must be
+            // evaluated against the SAME inner element, not independently ANDed at the top level — an
+            // AND of two separately {"nested":...}-wrapped trees re-runs the inner ∃ loop once per
+            // operand, so a DIFFERENT inner element could satisfy each conjunct (the "Delta" false-
+            // positive bug, one level deeper). Merge any trees sharing an outer {"nested": name} wrapper
+            // into ONE such wrapper around the AND of their (recursively re-merged) inner subtrees.
+            arrayTrees = mergeSharedNestedPrefixes(arrayTrees);
+
             Map<String, Object> combinedTree = arrayTrees.size() == 1 ? arrayTrees.get(0) : Map.of("op", "AND", "args", arrayTrees);
             RexNode anyMatchCall = buildAnyMatchExprCall(combinedTree, arrayCol, inputRowType, rexBuilder);
             if (anyMatchCall == null) {
@@ -798,6 +807,48 @@ public final class OpenSearchNestedFieldRewriter {
         return call.getOperands().get(0) instanceof RexInputRef ref && ref.getIndex() == arrayCol;
     }
 
+    /**
+     * Groups {@code trees} by their outermost {@code {"nested": name, "inner": ...}} wrapper (trees
+     * with no such wrapper — i.e. today's single-level shape — are left alone, in original relative
+     * order), and for any group of 2+ trees sharing the same {@code name}, replaces them with ONE
+     * {@code {"nested": name, "inner": <recursively re-merged AND of their inner subtrees>}} —
+     * required so multiple conjuncts on the same nested-array path are evaluated against the SAME
+     * inner element rather than independently ANDed (see the call site's javadoc for why an
+     * independent AND is a correctness bug, not just a missed optimization).
+     */
+    @SuppressWarnings("unchecked")
+    private static List<Map<String, Object>> mergeSharedNestedPrefixes(List<Map<String, Object>> trees) {
+        LinkedHashMap<String, List<Map<String, Object>>> byNestedName = new LinkedHashMap<>();
+        List<Map<String, Object>> unwrapped = new ArrayList<>();
+        for (Map<String, Object> tree : trees) {
+            Object nestedName = tree.get("nested");
+            if (nestedName instanceof String name) {
+                byNestedName.computeIfAbsent(name, k -> new ArrayList<>()).add(tree);
+            } else {
+                unwrapped.add(tree);
+            }
+        }
+        List<Map<String, Object>> merged = new ArrayList<>(unwrapped);
+        for (Map.Entry<String, List<Map<String, Object>>> entry : byNestedName.entrySet()) {
+            List<Map<String, Object>> group = entry.getValue();
+            if (group.size() == 1) {
+                merged.add(group.get(0));
+                continue;
+            }
+            List<Map<String, Object>> innerTrees = new ArrayList<>(group.size());
+            for (Map<String, Object> tree : group) {
+                innerTrees.add((Map<String, Object>) tree.get("inner"));
+            }
+            innerTrees = mergeSharedNestedPrefixes(innerTrees); // catch a further shared prefix one level deeper
+            Map<String, Object> mergedInner = innerTrees.size() == 1 ? innerTrees.get(0) : Map.of("op", "AND", "args", innerTrees);
+            Map<String, Object> mergedWrapper = new LinkedHashMap<>();
+            mergedWrapper.put("nested", entry.getKey());
+            mergedWrapper.put("inner", mergedInner);
+            merged.add(mergedWrapper);
+        }
+        return merged;
+    }
+
     /** ANDs {@code arrayCall} together with any parent-only conjuncts (passed through unchanged,
      *  since they're independent per-row and don't need per-element evaluation); returns {@code
      *  arrayCall} directly when there are none. */
@@ -835,12 +886,71 @@ public final class OpenSearchNestedFieldRewriter {
             this.inputRowType = inputRowType;
         }
 
-        /** Returns null if the tree can't be expressed (unsupported operator, or ITEM on the wrong array). */
+        /**
+         * Splits a chain {@code ITEM(ITEM(...ITEM($arrayCol,'f1')...,'f2'),'f3')} into its ordered
+         * list of field-name hops, {@code ["f1","f2","f3"]} — one entry per nested-array boundary
+         * plus the final leaf field. Returns {@code null} if {@code node} is not an ITEM chain
+         * rooted at {@code arrayCol} at all (e.g. a literal, a different column, or an unsupported
+         * shape) — the caller falls back accordingly.
+         */
+        private List<String> chainHops(RexNode node) {
+            List<String> hops = new ArrayList<>();
+            RexNode cur = node;
+            while (cur instanceof RexCall call && "ITEM".equals(call.getOperator().getName()) && call.getOperands().size() == 2) {
+                RexNode fieldNode = call.getOperands().get(1);
+                if (!(fieldNode instanceof RexLiteral lit) || lit.getTypeName() != SqlTypeName.CHAR) {
+                    return null;
+                }
+                hops.add(0, lit.getValueAs(String.class));
+                cur = call.getOperands().get(0);
+            }
+            if (hops.isEmpty() || !(cur instanceof RexInputRef ref) || ref.getIndex() != arrayCol) {
+                return null;
+            }
+            return hops;
+        }
+
+        /**
+         * Given the field-name hops of a chain rooted at {@code arrayCol}, walks each intermediate
+         * hop's type (starting from {@code arrayCol}'s own component/element ROW type) to find how
+         * many of the LEADING hops are themselves nested-array (further {@code ARRAY(ROW(...))})
+         * boundaries, as opposed to the final leaf. E.g. for {@code products.variants.color} with
+         * {@code hops = ["variants","color"]}: {@code variants} is itself an array (1 boundary),
+         * {@code color} is the terminal leaf field — returns 1. For the single-level {@code
+         * hops = ["score"]}: {@code score} is the terminal leaf directly — returns 0 (no further
+         * nesting to descend through; this is the pre-existing single-level shape).
+         */
+        private int countNestedBoundaries(List<String> hops) {
+            RelDataType elementType = inputRowType.getFieldList().get(arrayCol).getType().getComponentType();
+            int boundaries = 0;
+            for (int i = 0; i < hops.size() - 1; i++) {
+                if (elementType == null || !elementType.isStruct()) {
+                    break;
+                }
+                RelDataTypeField field = elementType.getField(hops.get(i), true, false);
+                if (field == null || field.getType().getSqlTypeName() != SqlTypeName.ARRAY) {
+                    break;
+                }
+                boundaries++;
+                elementType = field.getType().getComponentType();
+            }
+            return boundaries;
+        }
+
+        /**
+         * Returns null if the tree can't be expressed (unsupported operator, or ITEM on the wrong
+         * array). A leaf {@code ITEM($arrayCol,'field')} — single-hop, no further nested-array
+         * boundary — becomes {@code {"field":"field"}} directly. A multi-hop chain crossing one or
+         * more further nested-array boundaries (e.g. {@code products.variants.color}) can only be
+         * expressed by wrapping a whole COMPARISON in {@code {"nested":...,"inner":...}} (the Rust
+         * UDF dispatches {@code "nested"} from its boolean evaluator, {@code eval_bool}, never from
+         * its value evaluator, {@code eval_value} — see {@code nested_any_match_expr.rs}), so that
+         * descent happens in the comparison branch below, not here. A multi-hop chain reaching this
+         * leaf branch directly (with no enclosing comparison for the comparison branch to have
+         * already descended through) has no valid representation and falls back.
+         */
         Map<String, Object> build(RexNode node) {
-            // ITEM($arrayCol, 'field') -> {"field": "field"}
-            if (node instanceof RexCall itemCall
-                && "ITEM".equals(itemCall.getOperator().getName())
-                && itemCall.getOperands().size() == 2) {
+            if (node instanceof RexCall itemCall && "ITEM".equals(itemCall.getOperator().getName()) && itemCall.getOperands().size() == 2) {
                 RexNode arrayOperand = itemCall.getOperands().get(0);
                 RexNode fieldNode = itemCall.getOperands().get(1);
                 if (arrayOperand instanceof RexInputRef ref && fieldNode instanceof RexLiteral lit && lit.getTypeName() == SqlTypeName.CHAR) {
@@ -849,7 +959,7 @@ public final class OpenSearchNestedFieldRewriter {
                     }
                     return Map.of("field", lit.getValueAs(String.class));
                 }
-                return null;
+                return null; // multi-hop chain with no enclosing comparison — unsupported here, fall back
             }
 
             if (node instanceof RexLiteral lit) {
@@ -878,6 +988,20 @@ public final class OpenSearchNestedFieldRewriter {
                     // Unknown operator. If it references our array at all, we can't safely pass it
                     // through as a pure-parent predicate (it's ambiguous), so fail closed.
                     return containsItemOnArray(call) ? null : passthroughAsLiteralRef(call);
+                }
+                // COMPARISON crossing a nested-array boundary (e.g. products.variants.color = 'red',
+                // where 'variants' is itself nested one level below arrayCol): exactly one operand
+                // contains a chain descending through 1+ further nested-array boundaries, and no
+                // OTHER operand touches our array at all (see this method's javadoc — comparing two
+                // DIFFERENT nested chains to each other is not handled and falls back). Wrap the
+                // WHOLE comparison in {"nested": hop, "inner": ...} once per boundary crossed —
+                // required because the Rust UDF dispatches "nested" only from its boolean evaluator,
+                // never from the value evaluator that runs a comparison's individual operands.
+                if (isComparisonOp(opSymbol)) {
+                    Map<String, Object> descended = tryBuildComparisonWithDescent(call, opSymbol);
+                    if (descended != null) {
+                        return descended;
+                    }
                 }
                 List<Object> args = new ArrayList<>(call.getOperands().size());
                 for (RexNode operand : call.getOperands()) {
@@ -910,19 +1034,114 @@ public final class OpenSearchNestedFieldRewriter {
             return null;
         }
 
+        /**
+         * True if {@code node} contains an {@code ITEM} anywhere in its tree that is rooted (after
+         * walking down through any further chained {@code ITEM} calls — see {@link
+         * OpenSearchNestedFieldRewriter#itemArrayCol}) at {@code arrayCol}. A multi-level dotted path
+         * like {@code products.variants.color} must be recognized here — otherwise the conjunct gets
+         * silently classified as a PARENT predicate (see {@code tryLambdaRewrite}'s split into {@code
+         * arrayConjuncts}/{@code parentConjuncts}) and passed through unfiltered, which is a
+         * wrong-results bug, not a crash or a safe fallback (see FR-3 in the project plan).
+         */
         private boolean containsItemOnArray(RexNode node) {
             if (node instanceof RexCall call) {
-                if ("ITEM".equals(call.getOperator().getName()) && call.getOperands().size() == 2) {
-                    RexNode ref = call.getOperands().get(0);
-                    if (ref instanceof RexInputRef r && r.getIndex() == arrayCol) {
-                        return true;
-                    }
+                if ("ITEM".equals(call.getOperator().getName())
+                    && call.getOperands().size() == 2
+                    && itemArrayCol(call, inputRowType) == arrayCol) {
+                    return true;
                 }
                 for (RexNode op : call.getOperands()) {
                     if (containsItemOnArray(op)) return true;
                 }
             }
             return false;
+        }
+
+        private static boolean isComparisonOp(String opSymbol) {
+            return switch (opSymbol) {
+                case ">", ">=", "<", "<=", "=", "!=", "EXISTS", "NOT_EXISTS" -> true;
+                default -> false;
+            };
+        }
+
+        /**
+         * Attempts to build {@code call} (a comparison with operator symbol {@code opSymbol} —
+         * including the 1-operand {@code EXISTS}/{@code NOT_EXISTS}, i.e. {@code IS NOT NULL}/{@code
+         * IS NULL}) as a descended, {@code {"nested":...,"inner":...}}-wrapped tree, for the case
+         * where exactly one operand is an ITEM chain crossing 1+ further nested-array boundaries
+         * beyond {@code arrayCol} itself (e.g. {@code products.variants.color = 'red'}, or {@code
+         * products.variants.color IS NOT NULL}). Returns {@code null} — NOT a fall-back-worthy
+         * failure, just "this comparison doesn't need descent" — when no operand crosses a boundary
+         * (the ordinary single-level path in {@link #build} handles it), and returns {@code null}
+         * (this time meaning "unsupported, fall back entirely") when MORE THAN ONE operand touches
+         * our array — comparing two different nested chains to each other, or a chain against
+         * another reference into the same array at a different depth, has no defined per-element
+         * correlation semantics here and is intentionally not guessed at.
+         */
+        private Map<String, Object> tryBuildComparisonWithDescent(RexCall call, String opSymbol) {
+            List<RexNode> operands = call.getOperands();
+            if (operands.size() != 1 && operands.size() != 2) {
+                return null;
+            }
+            int chainOperandIdx = -1;
+            List<String> hops = null;
+            int boundaries = 0;
+            for (int i = 0; i < operands.size(); i++) {
+                RexNode operand = operands.get(i);
+                if (!containsItemOnArray(operand)) {
+                    continue;
+                }
+                List<String> operandHops = chainHops(operand);
+                if (operandHops == null) {
+                    return null; // touches our array but isn't a plain chain (e.g. arithmetic on it) — unsupported here
+                }
+                int operandBoundaries = countNestedBoundaries(operandHops);
+                if (operandBoundaries == 0) {
+                    continue; // single-level reference — no descent needed for THIS operand
+                }
+                if (chainOperandIdx != -1) {
+                    return null; // more than one operand crosses a boundary — unsupported, fall back
+                }
+                chainOperandIdx = i;
+                hops = operandHops;
+                boundaries = operandBoundaries;
+            }
+            if (chainOperandIdx == -1) {
+                return null; // no operand needed descent — let the caller build the ordinary shape
+            }
+            // Build the innermost comparison directly from the LEAF field name (the final hop),
+            // bypassing the ordinary ITEM-based leaf branch in build() entirely — after descent, the
+            // comparison operates on the innermost array's element, not on arrayCol's own element, so
+            // there is no ITEM RexNode left to re-walk; {"field": leaf} is exactly what eval_value
+            // expects once inside that many "nested" wrappers.
+            String leafField = hops.get(hops.size() - 1);
+            Map<String, Object> fieldNode = Map.of("field", leafField);
+            List<Object> comparisonArgs;
+            if (operands.size() == 1) {
+                comparisonArgs = List.of(fieldNode); // EXISTS/NOT_EXISTS: the chain IS the sole operand
+            } else {
+                RexNode otherOperand = operands.get(1 - chainOperandIdx);
+                if (containsItemOnArray(otherOperand)) {
+                    return null; // the non-chain operand ALSO touches our array — ambiguous, fall back
+                }
+                Map<String, Object> otherTree = build(otherOperand);
+                if (otherTree == null) {
+                    return null;
+                }
+                comparisonArgs = chainOperandIdx == 0 ? List.of(fieldNode, otherTree) : List.of(otherTree, fieldNode);
+            }
+            Map<String, Object> innerComparison = new LinkedHashMap<>();
+            innerComparison.put("op", opSymbol);
+            innerComparison.put("args", comparisonArgs);
+
+            Map<String, Object> wrapped = innerComparison;
+            for (int level = boundaries - 1; level >= 0; level--) {
+                Map<String, Object> nestedWrapper = new LinkedHashMap<>();
+                nestedWrapper.put("nested", hops.get(level));
+                nestedWrapper.put("inner", wrapped);
+                wrapped = nestedWrapper;
+            }
+            return wrapped;
         }
 
         /**
@@ -946,6 +1165,8 @@ public final class OpenSearchNestedFieldRewriter {
                 case LESS_THAN_OR_EQUAL -> "<=";
                 case EQUALS -> "=";
                 case NOT_EQUALS -> "!=";
+                case IS_NOT_NULL -> "EXISTS";
+                case IS_NULL -> "NOT_EXISTS";
                 case PLUS -> "+";
                 case MINUS -> "-";
                 case TIMES -> "*";
@@ -1096,12 +1317,19 @@ public final class OpenSearchNestedFieldRewriter {
         if (!"ITEM".equals(call.getOperator().getName()) || call.getOperands().size() != 2) {
             return -1;
         }
-        RexNode arrayRef = call.getOperands().get(0);
         RexNode fieldNode = call.getOperands().get(1);
-        if (!(arrayRef instanceof RexInputRef ref)) {
+        if (!(fieldNode instanceof RexLiteral lit) || lit.getTypeName() != SqlTypeName.CHAR) {
             return -1;
         }
-        if (!(fieldNode instanceof RexLiteral lit) || lit.getTypeName() != SqlTypeName.CHAR) {
+        RexNode arrayRef = call.getOperands().get(0);
+        while (arrayRef instanceof RexCall innerCall
+            && "ITEM".equals(innerCall.getOperator().getName())
+            && innerCall.getOperands().size() == 2
+            && innerCall.getOperands().get(1) instanceof RexLiteral innerLit
+            && innerLit.getTypeName() == SqlTypeName.CHAR) {
+            arrayRef = innerCall.getOperands().get(0);
+        }
+        if (!(arrayRef instanceof RexInputRef ref)) {
             return -1;
         }
         int colIndex = ref.getIndex();
