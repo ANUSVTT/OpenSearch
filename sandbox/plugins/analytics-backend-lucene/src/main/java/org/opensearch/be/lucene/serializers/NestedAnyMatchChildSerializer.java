@@ -37,6 +37,16 @@ import java.util.List;
  * <p>Expected RexCall shape: {@code NESTED_ANY_MATCH_CHILD($arrayCol, 'field', 'EQUALS', 'value', <int clauseIdx>)}
  * — 5 operands. {@code clauseIdx} is not needed to build the Lucene query (it pairs the peer with its JSON
  * node on the planner/executor side) and is ignored here.
+ *
+ * <p><b>Multi-level chains.</b> The {@code field} operand encodes the FULL remainder of the dotted path
+ * below the array column, dot-joined — plain {@code "author"} for the pre-existing single-level shape,
+ * or {@code "variants.color"} for a leaf 1 nested-array boundary below the array column (e.g.
+ * {@code products.variants.color}). The {@code _nested_path} filter MUST target the DEEPEST crossed
+ * level's own path (e.g. {@code "products.variants"}, not just {@code "products"}) — using the wrong
+ * level doesn't error, it silently matches zero children (a term on the correct leaf field restricted
+ * to the WRONG {@code _nested_path} scope never matches anything), which the caller's
+ * {@code has_clause} bookkeeping would still report as present, turning into an all-false clause
+ * instead of falling back. See {@code MULTI_LEVEL_LUCENE_DELEGATION_PLAN.md} &sect;2.4.2/FR-3.
  */
 public class NestedAnyMatchChildSerializer extends AbstractQuerySerializer {
 
@@ -57,16 +67,23 @@ public class NestedAnyMatchChildSerializer extends AbstractQuerySerializer {
         }
 
         FieldStorageInfo arrayField = FieldStorageInfo.resolve(fieldStorage, arrayColRef.getIndex());
-        String nestedPath = arrayField.getFieldName();
-        String leafField = nestedPath + "." + fieldName;
+        String arrayColPath = arrayField.getFieldName();
+        String leafField = arrayColPath + "." + fieldName;
 
-        // Child-scoped: the term on the child leaf, restricted to children of THIS nested path via the
-        // _nested_path marker. No NestedQueryBuilder/block-join wrap → the scorer yields CHILD docIds, which
-        // the executor maps to child-element ordinals. filter (not must) on _nested_path: it's a pure scope
-        // constraint, contributes no score (ScoreMode is irrelevant here — this query is a filter peer).
+        // fieldName is "leaf" (single-level) or "hop1.hop2...leaf" (multi-level) — everything but the
+        // final segment names intermediate nested-array boundaries crossed BELOW the array column; the
+        // deepest one is where the leaf actually lives, and is what _nested_path must target.
+        int lastDot = fieldName.lastIndexOf('.');
+        String deepestNestedPath = lastDot < 0 ? arrayColPath : arrayColPath + "." + fieldName.substring(0, lastDot);
+
+        // Child-scoped: the term on the child leaf, restricted to children of THIS (deepest) nested
+        // path via the _nested_path marker. No NestedQueryBuilder/block-join wrap → the scorer yields
+        // CHILD docIds, which the executor maps to child-element ordinals. filter (not must) on
+        // _nested_path: it's a pure scope constraint, contributes no score (ScoreMode is irrelevant
+        // here — this query is a filter peer).
         return new BoolQueryBuilder()
             .must(new TermQueryBuilder(leafField, value))
-            .filter(new TermQueryBuilder(NestedPathFieldMapper.NAME, nestedPath));
+            .filter(new TermQueryBuilder(NestedPathFieldMapper.NAME, deepestNestedPath));
     }
 
     private static String literalString(RexNode node, String operandName) {

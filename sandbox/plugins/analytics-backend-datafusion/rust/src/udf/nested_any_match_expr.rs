@@ -246,8 +246,12 @@ fn eval_bool(
     // semantics: an empty inner list, a null inner-list slot, and "inner elements present but none match"
     // ALL collapse to Some(false) (the parent has no matching nested child), never None. A null leaf on an
     // inner element is handled inside the recursion (its comparison yields None → that element doesn't
-    // match → the ∃ loop continues), never poisoning the whole result. Lucene split bits do NOT cross a
-    // nested boundary (the split delegates only top-level keyword clauses), so we descend with `None`.
+    // match → the ∃ loop continues), never poisoning the whole result. `lucene` is threaded through
+    // UNCHANGED: a `{"lucene": i}` node found at this depth (multi-level child-grain split) consults
+    // clause i's own bit array with the INNER elem_idx computed just below — each clause's bit array is
+    // built by the executor in that clause's own coordinate space (see single_collector.rs's per-clause
+    // chained-offset base computation), so indexing with whatever elem_idx is current at this recursion
+    // depth is always correct, regardless of how many `{"nested"}` levels were crossed to get here.
     if let Some(field_name) = node.get("nested").and_then(|v| v.as_str()) {
         let inner_subtree = node.get("inner").ok_or_else(|| {
             DataFusionError::Execution(format!(
@@ -290,7 +294,7 @@ fn eval_bool(
         let inner_start = inner_list.value_offsets()[elem_idx] as usize;
         let inner_end = inner_list.value_offsets()[elem_idx + 1] as usize;
         for inner_idx in inner_start..inner_end {
-            if let Some(true) = eval_bool(inner_subtree, inner_struct, &inner_fields, inner_idx, None)? {
+            if let Some(true) = eval_bool(inner_subtree, inner_struct, &inner_fields, inner_idx, lucene)? {
                 return Ok(Some(true));
             }
         }

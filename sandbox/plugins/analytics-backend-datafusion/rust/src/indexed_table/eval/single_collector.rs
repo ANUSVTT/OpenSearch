@@ -25,7 +25,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::OnceLock;
 
-use datafusion::arrow::array::{Array, AsArray, BooleanArray};
+use datafusion::arrow::array::{Array, AsArray, BooleanArray, ListArray, StructArray};
 use datafusion::arrow::record_batch::RecordBatch;
 use native_bridge_common::log_debug;
 use roaring::RoaringBitmap;
@@ -126,10 +126,20 @@ struct SingleCollectorState {
 /// One Lucene-delegated keyword clause of a child-grain nested split. `clause_idx` is the position
 /// referenced by the residual JSON's `{"lucene": clause_idx}` node; `annotation_id` keys the lazily-created
 /// peer provider (a child-scoped Lucene query — see `NestedAnyMatchChildSerializer`).
+///
+/// `nested_hops` names the intermediate nested-array FIELDS this clause's leaf sits below the outer
+/// array column, in outer-to-inner order — empty for the pre-existing single-level shape (leaf lives
+/// directly on the array column's own elements), one entry for a leaf crossing 1 further nested-array
+/// boundary (e.g. `products.variants.color` → `["variants"]`), etc. `evaluate_child_split` uses these
+/// names to chain through that many additional levels of `value_offsets` (by looking up each named
+/// field on the CURRENT struct type in turn) to compute this clause's own coordinate base — the exact
+/// same field-by-name descent `nested_any_match_expr.rs`'s `eval_bool` performs per-element, just done
+/// once per clause per batch instead of once per element.
 #[derive(Debug, Clone)]
 pub struct ChildClause {
     pub clause_idx: usize,
     pub annotation_id: i32,
+    pub nested_hops: Vec<String>,
 }
 
 /// State for the child-grain nested-predicate split, attached to a `SingleCollectorEvaluator` when the
@@ -311,6 +321,59 @@ fn should_consult_lucene(
     surviving_fraction > threshold
 }
 
+/// Returns, for `list` (the outer LIST&lt;STRUCT&gt; array column) and `nested_hops` (a chain of field
+/// names on that struct type, each itself a nested-array field — e.g. `["variants"]` for a clause whose
+/// leaf lives on `products.variants.<leaf>`), one `value_offsets` slice per level in the chain, level 0
+/// first (the outer list's own offsets), each subsequent one belonging to the named hop at that depth.
+///
+/// This is the multi-level generalization of the pre-existing single-shared-`child_base` computation:
+/// for `nested_hops.is_empty()` it returns exactly `[list.value_offsets()]`, one entry, reducing the
+/// caller's chained lookup to the prior single-level behavior unchanged. For 1+ hops, each level's
+/// `value_offsets` is looked up by field NAME on the struct type at that depth — the SAME
+/// field-by-name descent `nested_any_match_expr.rs`'s `eval_bool` performs per-element for the
+/// `{"nested":...}` JSON shape, done here once per clause per batch (not once per element) purely to
+/// compute each row's coordinate BASE; the actual boolean evaluation still happens inside the UDF.
+///
+/// No Lucene-side intermediate-parent identity is needed for this to be correct — see
+/// `MULTI_LEVEL_LUCENE_DELEGATION_PLAN.md` &sect;1.3 finding 2 and its Phase 0 empirical validation:
+/// each level's own `value_offsets`, chained through in order, already recovers the correct coordinate,
+/// because both Lucene and Arrow/Parquet preserve the same ingest parse order independently.
+fn descend_nested_hops(list: &ListArray, nested_hops: &[String]) -> Result<Vec<Vec<i32>>, String> {
+    let mut chain = vec![list.value_offsets().to_vec()];
+    let mut current_values = list.values().clone();
+    for hop in nested_hops {
+        let struct_array = current_values.as_struct_opt().ok_or_else(|| {
+            format!(
+                "child-split: expected Struct while descending nested_hops at '{}', got {:?}",
+                hop,
+                current_values.data_type()
+            )
+        })?;
+        let field_idx = struct_array
+            .fields()
+            .iter()
+            .position(|f| f.name() == hop)
+            .ok_or_else(|| {
+                format!(
+                    "child-split: nested_hops field '{}' not found on struct fields {:?}",
+                    hop,
+                    struct_array.fields().iter().map(|f| f.name()).collect::<Vec<_>>()
+                )
+            })?;
+        let inner_col = struct_array.column(field_idx);
+        let inner_list = inner_col.as_list_opt::<i32>().ok_or_else(|| {
+            format!(
+                "child-split: nested_hops field '{}' must be List, got {:?}",
+                hop,
+                inner_col.data_type()
+            )
+        })?;
+        chain.push(inner_list.value_offsets().to_vec());
+        current_values = inner_list.values().clone();
+    }
+    Ok(chain)
+}
+
 impl SingleCollectorEvaluator {
     /// Evaluate a child-grain nested split against one delivered batch. Returns the per-parent-row
     /// BooleanArray (length `batch_len`) that the `nested_any_match_expr` predicate produces once each
@@ -392,28 +455,6 @@ impl SingleCollectorEvaluator {
                 array.data_type()
             )
         })?;
-        let value_offsets = list.value_offsets();
-        // value_offsets has batch_len+1 entries; the last is the flattened element count for this batch.
-        let total_children = *value_offsets.last().map(|&o| o).get_or_insert(0) as usize;
-
-        // Build child_base over the WHOLE RG (rows not in this batch stay -1). value_offsets[d] is the
-        // element start of delivered row d; map d → its RG position and record the base there.
-        let mut child_base = vec![-1i32; state.rg_num_rows];
-        for d in 0..batch_len {
-            let p = position_map.rg_position(batch_offset + d).ok_or_else(|| {
-                format!(
-                    "child-split: delivered row {} (batch_offset {}) out of PositionMap range",
-                    d, batch_offset
-                )
-            })?;
-            if p >= state.rg_num_rows {
-                return Err(format!(
-                    "child-split: RG position {} >= rg_num_rows {}",
-                    p, state.rg_num_rows
-                ));
-            }
-            child_base[p] = value_offsets[d];
-        }
 
         // Parent-row window for the child scan: the whole RG in absolute doc space.
         let min_doc = state.rg_first_row as i32;
@@ -423,6 +464,12 @@ impl SingleCollectorEvaluator {
         // provider is created lazily and shared across batches/RGs of the same query via the query-scoped
         // OnceLock map; the collector is per-(segment, RG window). clause_bits[i] aligns with clause_idx i
         // because `clauses` is sorted ascending — the classifier guarantees a dense 0..N clause set.
+        //
+        // Each clause computes its OWN `child_base`/`total_children`, chaining through its own
+        // `nested_hops` (empty for the pre-existing single-level shape, reducing to exactly the prior
+        // single-shared-base behavior; 1+ entries for a multi-level leaf) — different clauses in the same
+        // compound predicate can sit at different depths, so one shared base can't serve all of them (see
+        // `MULTI_LEVEL_LUCENE_DELEGATION_PLAN.md` Component C / FR-7).
         let mut clause_bits: Vec<BooleanArray> = Vec::with_capacity(child_split.clauses.len());
         for (expected_idx, clause) in child_split.clauses.iter().enumerate() {
             if clause.clause_idx != expected_idx {
@@ -431,6 +478,36 @@ impl SingleCollectorEvaluator {
                     expected_idx, clause.clause_idx
                 ));
             }
+            let offsets_chain = descend_nested_hops(list, &clause.nested_hops)?;
+            let total_children = offsets_chain.last().and_then(|o| o.last()).copied().unwrap_or(0) as usize;
+
+            // Build child_base over the WHOLE RG (rows not in this batch stay -1). offsets_chain[0][d] is
+            // this clause's own coordinate base for delivered row d: level0's flattened element start
+            // (single-level shape), further descended through each of nested_hops' own value_offsets for
+            // a multi-level leaf (see descend_nested_hops's doc comment for why chaining through each
+            // level's OWN value_offsets — rather than needing any Lucene-side intermediate-parent
+            // identity — is sufficient; validated empirically in Phase 0 of the design plan).
+            let mut child_base = vec![-1i32; state.rg_num_rows];
+            for d in 0..batch_len {
+                let p = position_map.rg_position(batch_offset + d).ok_or_else(|| {
+                    format!(
+                        "child-split: delivered row {} (batch_offset {}) out of PositionMap range",
+                        d, batch_offset
+                    )
+                })?;
+                if p >= state.rg_num_rows {
+                    return Err(format!(
+                        "child-split: RG position {} >= rg_num_rows {}",
+                        p, state.rg_num_rows
+                    ));
+                }
+                let mut pos = offsets_chain[0][d];
+                for level_offsets in &offsets_chain[1..] {
+                    pos = level_offsets[pos as usize];
+                }
+                child_base[p] = pos;
+            }
+
             let lock = child_split
                 .provider_locks
                 .get(&clause.annotation_id)
@@ -1346,6 +1423,7 @@ mod tests {
                 clauses: vec![ChildClause {
                     clause_idx: 0,
                     annotation_id,
+                    nested_hops: vec![],
                 }],
                 provider_locks: Arc::new(child_locks),
             }),
@@ -1432,6 +1510,138 @@ mod tests {
             .evaluate_child_split(eval.child_split.as_ref().unwrap(), &state, &pm, 0, 2, &batch)
             .unwrap();
         assert_eq!(mask, BooleanArray::from(vec![true, false]));
+    }
+
+    /// One `LIST<STRUCT{pname:Utf8, variants: LIST<STRUCT{color:Utf8, price:Int64}>}>` column named
+    /// "products" — the depth-2 shape `products.variants.color`/`products.variants.price` descend
+    /// through. `rows` is per-root a list of (pname, variants), each variant a (color, price) pair.
+    fn products_variants_batch(rows: &[(&str, Vec<(&str, i64)>)]) -> RecordBatch {
+        let mut pnames: Vec<Option<String>> = Vec::new();
+        let mut variant_lists: Vec<ArrayRef> = Vec::new();
+        let mut colors: Vec<Option<String>> = Vec::new();
+        let mut prices: Vec<Option<i64>> = Vec::new();
+        let mut variant_offsets: Vec<i32> = vec![0];
+        let mut variant_acc = 0i32;
+        for (pname, variants) in rows {
+            pnames.push(Some((*pname).to_string()));
+            for (color, price) in variants {
+                colors.push(Some((*color).to_string()));
+                prices.push(Some(*price));
+            }
+            variant_acc += variants.len() as i32;
+            variant_offsets.push(variant_acc);
+        }
+        let variant_fields: Fields = Fields::from(vec![
+            Field::new("color", DataType::Utf8, true),
+            Field::new("price", DataType::Int64, true),
+        ]);
+        let variant_struct = StructArray::new(
+            variant_fields.clone(),
+            vec![
+                Arc::new(StringArray::from(colors)) as ArrayRef,
+                Arc::new(Int64Array::from(prices)) as ArrayRef,
+            ],
+            None,
+        );
+        let variant_list_field = Arc::new(Field::new("item", DataType::Struct(variant_fields), true));
+        let variant_list = ListArray::new(
+            variant_list_field.clone(),
+            OffsetBuffer::new(variant_offsets.into()),
+            Arc::new(variant_struct),
+            None,
+        );
+        variant_lists.push(Arc::new(variant_list));
+
+        let root_fields: Fields = Fields::from(vec![
+            Field::new("pname", DataType::Utf8, true),
+            Field::new("variants", DataType::List(variant_list_field), true),
+        ]);
+        let root_struct = StructArray::new(
+            root_fields.clone(),
+            vec![Arc::new(StringArray::from(pnames)) as ArrayRef, variant_lists.remove(0)],
+            None,
+        );
+        let root_offsets: Vec<i32> = (0..=rows.len() as i32).collect(); // one product per root row
+        let root_list_field = Arc::new(Field::new("item", DataType::Struct(root_fields), true));
+        let root_list = ListArray::new(
+            root_list_field.clone(),
+            OffsetBuffer::new(root_offsets.into()),
+            Arc::new(root_struct),
+            None,
+        );
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "products",
+            DataType::List(root_list_field),
+            true,
+        )]));
+        RecordBatch::try_new(schema, vec![Arc::new(root_list) as ArrayRef]).unwrap()
+    }
+
+    #[test]
+    fn child_split_depth2_chains_nested_hops_for_multilevel_clause() {
+        // products.variants.color='red' (routed to Lucene, clause 0, nested_hops=["variants"]) AND
+        // products.variants.price>100 (native). Both under the SAME shared prefix ("nested":"variants"),
+        // matching the {"nested":"variants","inner":{"op":"AND",...}} shape insertLuceneMarkerAtDepth +
+        // mergeSharedNestedPrefixes would actually produce for this predicate.
+        //
+        // P0 (row0): ONE product with 2 variants: red@50 (color matches, price doesn't), blue@200 (price
+        // matches, color doesn't) — no SINGLE variant satisfies BOTH → expected false (this is exactly
+        // the "Delta" class of correctness check, one level deeper: proves child_base is computed at the
+        // VARIANT level, not silently collapsed to the product level).
+        // P1 (row1): ONE product with 1 variant: red@150 — satisfies both → expected true.
+        let expr_json = r#"{"nested":"variants","inner":{"op":"AND","args":[
+             {"lucene":0,"fallback":{"op":"=","args":[{"field":"color"},{"lit":"red"}]}},
+             {"op":">","args":[{"field":"price"},{"lit":100}]}
+           ]}}"#
+        .to_string();
+        let batch = products_variants_batch(&[
+            ("Widget", vec![("red", 50), ("blue", 200)]),
+            ("Gadget", vec![("red", 150)]),
+        ]);
+
+        // Lucene matches color='red' at the two variants that are actually red: root0's variant offset 0
+        // (Widget's red@50) and root1's variant offset 0 (Gadget's red@150) — expressed as (root_row,
+        // variant_offset_within_that_root) pairs, exactly like the single-level stub's (row, off) contract,
+        // now at the deeper level.
+        let annotation_id = 9;
+        let mut child_locks = HashMap::new();
+        let lock: Arc<OnceLock<ProviderHandle>> = Arc::new(OnceLock::new());
+        lock.set(ProviderHandle::new_for_test(0)).ok();
+        child_locks.insert(annotation_id, lock);
+        let eval = SingleCollectorEvaluator::new(
+            None,
+            minimal_page_pruner(),
+            None,
+            None,
+            None,
+            None,
+            CollectorCallStrategy::FullRange,
+            Arc::new(HashMap::new()),
+            0,
+            Arc::new(ChildStubFactory {
+                matches: vec![(0, 0), (1, 0)],
+            }),
+            0,
+            None,
+            None,
+            HashMap::new(),
+            Some(ChildSplitState {
+                array_col_name: "products".to_string(),
+                expr_json,
+                clauses: vec![ChildClause {
+                    clause_idx: 0,
+                    annotation_id,
+                    nested_hops: vec!["variants".to_string()],
+                }],
+                provider_locks: Arc::new(child_locks),
+            }),
+        );
+        let state = state_for(2);
+        let pm = PositionMap::Identity { delivered_count: 2 };
+        let mask = eval
+            .evaluate_child_split(eval.child_split.as_ref().unwrap(), &state, &pm, 0, 2, &batch)
+            .unwrap();
+        assert_eq!(mask, BooleanArray::from(vec![false, true]));
     }
 
     #[test]
