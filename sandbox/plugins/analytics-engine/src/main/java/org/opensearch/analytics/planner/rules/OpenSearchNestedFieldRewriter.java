@@ -275,27 +275,101 @@ public final class OpenSearchNestedFieldRewriter {
 
     /**
      * Rewrites {@code ITEM($arrayCol,'field')} references in {@code project}'s expressions to
-     * columns of an injected {@code LogicalNestedScope} (the original, child-grain unnest path). Used
+     * columns of injected {@code LogicalNestedScope}(s) (the original, child-grain unnest path). Used
      * when the Aggregate-input guard determines a genuine grain change is required.
+     *
+     * <p>Delegates to {@link #stackedUnnest} so that a DEEP nested leaf — an ITEM CHAIN crossing
+     * MULTIPLE {@code nested} array boundaries, e.g. {@code comments.replies.tags.name} — has EVERY
+     * array level exploded, not just the outermost one. A single {@code injectUnnest} explodes only
+     * the outermost array ({@code comments}) and leaves the residual inner chain
+     * ({@code ITEM(ITEM($replies,'tags'),'name')}) over a STILL-array column, which mis-emits to
+     * Substrait as e.g. {@code array_element(get_field(array_element(...),'tags'),'name')} and fails
+     * with "Named schema must contain names for all fields". The loop keeps exploding until the leaf
+     * resolves to a scalar column, so the fix is ARBITRARY-DEPTH (2, 3, 4, ... N levels) — the number
+     * of passes is driven purely by the schema, never a hardcoded depth.
      */
     private static RelNode rewriteProjectViaUnnest(LogicalProject project) {
-        RelNode input = project.getInput();
-        int arrayCol = firstArrayColReferenced(project.getProjects(), input.getRowType());
-        if (arrayCol < 0) {
-            return project;
+        StackedUnnestResult r = stackedUnnest(
+            project.getInput(),
+            project.getProjects(),
+            List.of(),
+            project.getCluster(),
+            project.getCluster().getRexBuilder()
+        );
+        if (r.levels == 0) {
+            return project; // nothing referenced our array
         }
-        RelOptCluster cluster = project.getCluster();
-        RexBuilder rexBuilder = cluster.getRexBuilder();
-        UnnestResult u = injectUnnest(input, arrayCol, cluster, rexBuilder);
-        if (u == null) {
-            return project;
+        return LogicalProject.create(r.input, List.of(), r.projectExprs, project.getRowType().getFieldNames());
+    }
+
+    /** Result of a stacked unnest: the final NestedScope input, the rewritten project exprs + extra exprs, and level count. */
+    private record StackedUnnestResult(RelNode input, List<RexNode> projectExprs, List<RexNode> extraExprs, int levels) {}
+
+    /**
+     * STACKED (iterative) UNNEST for ARBITRARY nesting depth. A deep path
+     * {@code comments.replies.tags.name} (each level a {@code nested} ARRAY(ROW)) lowers to an ITEM
+     * CHAIN {@code ITEM(ITEM(ITEM($comments,'replies'),'tags'),'name')}. One unnest explodes only the
+     * OUTERMOST array; the residual chain over the still-array inner column would mis-emit as
+     * {@code array_element(Struct,...)} and fail. So we iterate: each pass explodes the outermost
+     * still-array level referenced by an ITEM in {@code projectExprs}, rewriting that ITEM link (in
+     * BOTH {@code projectExprs} AND {@code extraExprs}) to the exploded column, until no ITEM-on-array
+     * remains in {@code projectExprs} (the leaf is a scalar column). The number of passes equals the
+     * schema nesting depth of the referenced leaf — a 2-level path does 2 passes, a 3-level path does
+     * 3, an N-level path does N — with NO depth-specific branching and NO hardcoded constant; the loop
+     * terminates purely when {@code firstArrayColReferenced} finds no more ITEM-on-array. The {@code
+     * MAX_UNNEST_DEPTH} cap is a pure defensive guard against a pathological/malformed chain, never
+     * reached by normal schema-driven descent.
+     *
+     * <p>{@code extraExprs} (e.g. a same-path filter condition) ride through the SAME per-level
+     * shuttles so they resolve to the SAME exploded element columns; today's only caller passes an
+     * empty list, but the parameter keeps this a faithful port of the proven logic.
+     *
+     * <p><b>ADAPTATION NOTE:</b> the pre-merge version iterated on a Calcite {@code
+     * LogicalCorrelate} ({@code u.correlate}); HEAD's {@code injectUnnest} instead returns a
+     * backend-neutral {@link LogicalNestedScope} ({@code u.nestedScope}), which is fed back as the
+     * next {@code input} and whose {@code getRowType()} backs each per-level {@code ItemRewriteShuttle}.
+     */
+    private static StackedUnnestResult stackedUnnest(
+        RelNode input,
+        List<RexNode> projectExprs,
+        List<RexNode> extraExprs,
+        RelOptCluster cluster,
+        RexBuilder rexBuilder
+    ) {
+        List<RexNode> exprs = new ArrayList<>(projectExprs);
+        List<RexNode> extra = new ArrayList<>(extraExprs);
+        int levels = 0;
+        final int MAX_UNNEST_DEPTH = 64; // defensive: schema nesting is far shallower; prevents any loop
+        while (true) {
+            int arrayCol = firstArrayColReferenced(exprs, input.getRowType());
+            if (arrayCol < 0) {
+                break; // no more ITEM-on-array in the metric exprs — chain fully resolved to scalar refs
+            }
+            if (levels++ >= MAX_UNNEST_DEPTH) {
+                LOGGER.warn("[NESTED] stacked-unnest exceeded max depth {} — leaving remaining ITEM refs", MAX_UNNEST_DEPTH);
+                break;
+            }
+            UnnestResult u = injectUnnest(input, arrayCol, cluster, rexBuilder);
+            if (u == null) {
+                break; // not ARRAY(ROW) at this level — leave as-is (caller/emission handles/fails cleanly)
+            }
+            ItemRewriteShuttle shuttle = new ItemRewriteShuttle(arrayCol, u.unnestedFieldIndex, rexBuilder, u.nestedScope.getRowType());
+            List<RexNode> rewritten = new ArrayList<>(exprs.size());
+            for (RexNode e : exprs) {
+                rewritten.add(e.accept(shuttle));
+            }
+            List<RexNode> rewrittenExtra = new ArrayList<>(extra.size());
+            for (RexNode e : extra) {
+                rewrittenExtra.add(e.accept(shuttle));
+            }
+            exprs = rewritten;
+            extra = rewrittenExtra;
+            input = u.nestedScope;
         }
-        ItemRewriteShuttle shuttle = new ItemRewriteShuttle(arrayCol, u.unnestedFieldIndex, rexBuilder, u.nestedScope.getRowType());
-        List<RexNode> newExprs = new ArrayList<>(project.getProjects().size());
-        for (RexNode e : project.getProjects()) {
-            newExprs.add(e.accept(shuttle));
+        if (levels > 0) {
+            LOGGER.info("[NESTED] stacked-unnest injected {} UNNEST level(s)", levels);
         }
-        return LogicalProject.create(u.nestedScope, List.of(), newExprs, project.getRowType().getFieldNames());
+        return new StackedUnnestResult(input, exprs, extra, levels);
     }
 
     /**
