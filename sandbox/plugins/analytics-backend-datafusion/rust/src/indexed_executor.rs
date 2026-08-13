@@ -574,7 +574,12 @@ fn find_nested_expr_predicate(node: &BoolNode, out: &mut Option<(String, String)
 
 /// DFS for child peers: `DelegationPossible` leaves whose `original_expr` is a
 /// `nested_any_match_child(arrayCol, field, op, value, clauseIdx)` call. Extracts `clauseIdx` (args[4],
-/// an Int32 literal) and pairs it with the leaf's `annotation_id`.
+/// an Int32/string literal) and the FIELD chain (args[1] — a bare leaf name for the single-level shape,
+/// or a dot-joined `"hop1.hop2...leaf"` for a multi-level chain, see the rewriter's
+/// `tryDirectEqualityChildRewrite`), pairing them with the leaf's `annotation_id`. The chain's leading
+/// segments (everything but the final leaf) become `ChildClause.nested_hops` — the intermediate
+/// nested-array field names `evaluate_child_split` must descend through to compute this clause's own
+/// coordinate base; empty for the pre-existing single-level shape.
 fn collect_child_peers(node: &BoolNode, clauses: &mut Vec<ChildClause>, annotation_ids: &mut Vec<i32>) {
     match node {
         BoolNode::And(children) | BoolNode::Or(children) => {
@@ -591,10 +596,13 @@ fn collect_child_peers(node: &BoolNode, clauses: &mut Vec<ChildClause>, annotati
                 if sf.name() == "nested_any_match_child" {
                     let args = sf.args();
                     if args.len() == 5 {
-                        if let Some(clause_idx) = literal_i32(&args[4]) {
+                        if let (Some(clause_idx), Some(field_chain)) = (literal_i32(&args[4]), literal_utf8(&args[1])) {
+                            let mut segments: Vec<String> = field_chain.split('.').map(str::to_string).collect();
+                            segments.pop(); // drop the leaf — nested_hops is everything ABOVE the leaf
                             clauses.push(ChildClause {
                                 clause_idx: clause_idx as usize,
                                 annotation_id: *annotation_id,
+                                nested_hops: segments,
                             });
                             annotation_ids.push(*annotation_id);
                         }
@@ -606,7 +614,9 @@ fn collect_child_peers(node: &BoolNode, clauses: &mut Vec<ChildClause>, annotati
     }
 }
 
-/// Return the set of `{"lucene": i}` indices referenced anywhere in the parsed nested-predicate JSON.
+/// Return the set of `{"lucene": i}` indices referenced anywhere in the parsed nested-predicate JSON —
+/// including inside 1+ `{"nested":...,"inner":...}` wrappers, so a multi-level child-grain marker
+/// (placed at the deepest matching depth by the rewriter's `insertLuceneMarkerAtDepth`) is still found.
 fn json_lucene_indices(node: &serde_json::Value) -> Vec<usize> {
     let mut out = Vec::new();
     fn walk(n: &serde_json::Value, out: &mut Vec<usize>) {
@@ -620,6 +630,9 @@ fn json_lucene_indices(node: &serde_json::Value) -> Vec<usize> {
         }
         if let Some(fb) = n.get("fallback") {
             walk(fb, out);
+        }
+        if let Some(inner) = n.get("inner") {
+            walk(inner, out);
         }
     }
     walk(node, &mut out);
@@ -1026,6 +1039,120 @@ mod tests {
         assert_eq!(segs.len(), 1);
         assert_eq!(segs[0].global_base, 7);
         assert_eq!(segs[0].max_doc, 42);
+    }
+
+    // ── json_lucene_indices: multi-level "inner" recursion ─────────────
+
+    #[test]
+    fn json_lucene_indices_finds_hole_inside_nested_wrapper() {
+        // {"nested":"variants","inner":{"op":"AND","args":[{"lucene":0,"fallback":...}, ...]}} — the
+        // exact shape insertLuceneMarkerAtDepth produces for a depth-1-boundary child-grain clause. Prior
+        // to this fix, json_lucene_indices never walked "inner", so this hole would be invisible and
+        // build_child_split would decline the split (correct, but unaccelerated) even when the rewriter,
+        // serializer, and evaluator all correctly support it.
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{"nested":"variants","inner":{"op":"AND","args":[
+                 {"lucene":0,"fallback":{"op":"=","args":[{"field":"color"},{"lit":"red"}]}},
+                 {"op":">","args":[{"field":"price"},{"lit":100}]}
+               ]}}"#,
+        )
+        .unwrap();
+        assert_eq!(json_lucene_indices(&json), vec![0]);
+    }
+
+    #[test]
+    fn json_lucene_indices_finds_holes_across_multiple_nested_levels() {
+        // Two separate {"nested":...} subtrees (NOT sharing a prefix — a top-level AND of two distinct
+        // nested-array predicates), each with its own {"lucene"} hole — both must be found, sorted.
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{"op":"AND","args":[
+                 {"nested":"offices","inner":{"lucene":1,"fallback":{"op":"=","args":[{"field":"city"},{"lit":"Seattle"}]}}},
+                 {"nested":"divisions","inner":{"lucene":0,"fallback":{"op":"=","args":[{"field":"division"},{"lit":"Cloud"}]}}}
+               ]}"#,
+        )
+        .unwrap();
+        assert_eq!(json_lucene_indices(&json), vec![0, 1]);
+    }
+
+    #[test]
+    fn json_lucene_indices_top_level_shape_unchanged() {
+        // Pre-existing single-level shape: {"lucene"} at the top level, no "nested" wrapper at all —
+        // confirms the fix didn't change behavior for the case that already worked.
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{"op":"AND","args":[
+                 {"lucene":0,"fallback":{"op":"=","args":[{"field":"author"},{"lit":"alice"}]}},
+                 {"op":">","args":[{"field":"score"},{"lit":50}]}
+               ]}"#,
+        )
+        .unwrap();
+        assert_eq!(json_lucene_indices(&json), vec![0]);
+    }
+
+    // ── collect_child_peers: nested_hops extraction ────────────────────
+
+    fn child_peer_call(field_chain: &str, clause_idx: i32) -> Arc<dyn PhysicalExpr> {
+        let array_ref: Arc<dyn PhysicalExpr> = Arc::new(PhysColumn::new("products", 0));
+        let field: Arc<dyn PhysicalExpr> = Arc::new(Literal::new(ScalarValue::Utf8(Some(field_chain.to_string()))));
+        let op: Arc<dyn PhysicalExpr> = Arc::new(Literal::new(ScalarValue::Utf8(Some("EQUALS".to_string()))));
+        let value: Arc<dyn PhysicalExpr> = Arc::new(Literal::new(ScalarValue::Utf8(Some("red".to_string()))));
+        let idx: Arc<dyn PhysicalExpr> = Arc::new(Literal::new(ScalarValue::Utf8(Some(clause_idx.to_string()))));
+        // Real nested_any_match_child UDF (its body is never invoked by this test — collect_child_peers
+        // only inspects the ScalarFunctionExpr's name/args, per its own doc comment).
+        let udf = Arc::new(datafusion::logical_expr::ScalarUDF::from(
+            crate::udf::nested_any_match_child::NestedAnyMatchChildUdf::new(),
+        ));
+        let return_field = Arc::new(Field::new("nested_any_match_child", DataType::Boolean, true));
+        Arc::new(ScalarFunctionExpr::new(
+            "nested_any_match_child",
+            udf,
+            vec![array_ref, field, op, value, idx],
+            return_field,
+            Arc::new(datafusion::config::ConfigOptions::default()),
+        ))
+    }
+
+    #[test]
+    fn collect_child_peers_single_level_has_no_nested_hops() {
+        let node = BoolNode::DelegationPossible {
+            annotation_id: 5,
+            original_expr: child_peer_call("author", 0),
+        };
+        let mut clauses = Vec::new();
+        let mut ids = Vec::new();
+        collect_child_peers(&node, &mut clauses, &mut ids);
+        assert_eq!(clauses.len(), 1);
+        assert_eq!(clauses[0].clause_idx, 0);
+        assert_eq!(clauses[0].annotation_id, 5);
+        assert!(clauses[0].nested_hops.is_empty(), "single-level field chain must have no nested_hops");
+    }
+
+    #[test]
+    fn collect_child_peers_multilevel_extracts_hops_excluding_leaf() {
+        let node = BoolNode::DelegationPossible {
+            annotation_id: 9,
+            original_expr: child_peer_call("variants.color", 0),
+        };
+        let mut clauses = Vec::new();
+        let mut ids = Vec::new();
+        collect_child_peers(&node, &mut clauses, &mut ids);
+        assert_eq!(clauses.len(), 1);
+        assert_eq!(
+            clauses[0].nested_hops,
+            vec!["variants".to_string()],
+            "nested_hops must contain everything BEFORE the leaf, not the leaf itself"
+        );
+    }
+
+    #[test]
+    fn collect_child_peers_two_level_extracts_both_hops() {
+        let node = BoolNode::DelegationPossible {
+            annotation_id: 3,
+            original_expr: child_peer_call("variants.specs.key", 0),
+        };
+        let mut clauses = Vec::new();
+        let mut ids = Vec::new();
+        collect_child_peers(&node, &mut clauses, &mut ids);
+        assert_eq!(clauses[0].nested_hops, vec!["variants".to_string(), "specs".to_string()]);
     }
 }
 

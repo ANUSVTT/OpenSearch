@@ -1,0 +1,819 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<title>Multi-Level Nested (N2+) Search -- mustang-nested-testkit Results</title>
+<style>
+:root { color-scheme: light dark; }
+body { font-family: -apple-system, "Segoe UI", Helvetica, sans-serif; margin: 20px; line-height: 1.5; font-size: 13px; }
+h1 { font-size: 18px; } h2 { font-size: 15px; margin-top: 28px; } h3 { font-size: 14px; margin-top: 22px; color: #333; }
+@media (prefers-color-scheme: dark) { h3 { color: #ccc; } }
+table { border-collapse: collapse; margin: 10px 0 20px; width: 100%; }
+th, td { border: 1px solid #8884; padding: 5px 9px; font-size: 12px; text-align: left; vertical-align: top; }
+th { background: #f3f3f3; position: sticky; top: 0; }
+@media (prefers-color-scheme: dark) { th { background: #2a2a2a; } pre { background: #1a1a1a; } }
+.pass { background: #e8f8e8; } .fail { background: #fde8e8; } .warn { background: #fff3e0; }
+@media (prefers-color-scheme: dark) { .pass { background: #10331a; } .fail { background: #3a1616; } .warn { background: #3a2a10; } }
+code { font-family: ui-monospace, Menlo, monospace; font-size: 11px; }
+pre { font-family: ui-monospace, Menlo, monospace; font-size: 11px; background: #f5f5f5; padding: 10px; border-radius: 4px; overflow-x: auto; margin: 6px 0; white-space: pre-wrap; word-wrap: break-word; }
+.num { text-align: right; font-weight: bold; }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; }
+.badge-pass { background: #4caf50; color: white; }
+.badge-fail { background: #f44336; color: white; }
+.badge-note { background: #ff9800; color: white; }
+.badge-fam { background: #6a4bc6; color: white; }
+.badge-src { background: #0277bd; color: white; }
+.badge-lucene { background: #2e7d32; color: white; }
+.badge-df { background: #607d8b; color: white; }
+details { margin: 4px 0; }
+details summary { cursor: pointer; font-weight: bold; font-size: 12px; padding: 2px 0; }
+details pre { margin-top: 6px; }
+.doc-block { margin: 12px 0; }
+.doc-entry { margin-bottom: 10px; padding: 8px; background: #fafafa; border-radius: 4px; border-left: 3px solid #ddd; }
+@media (prefers-color-scheme: dark) { .doc-entry { background: #1e1e1e; border-left-color: #444; } }
+.section-header { background: #e3edf7; padding: 8px 12px; border-radius: 6px; margin-top: 20px; margin-bottom: 8px; }
+@media (prefers-color-scheme: dark) { .section-header { background: #1c2c3c; } }
+.note-box { background: #fff3e0; border-left: 4px solid #ff9800; padding: 10px 14px; border-radius: 4px; margin: 12px 0; }
+@media (prefers-color-scheme: dark) { .note-box { background: #3a2a10; } }
+.milestone-box { background: #e8f5e9; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 4px; margin: 12px 0; }
+@media (prefers-color-scheme: dark) { .milestone-box { background: #0d2b12; } }
+.case-card { border: 1px solid #8884; border-radius: 6px; margin: 14px 0; padding: 12px 14px; }
+.case-card.pass { border-left: 4px solid #4caf50; }
+.case-card.fail { border-left: 4px solid #f44336; }
+.case-title { font-weight: bold; font-size: 13px; }
+.kv { color: #666; font-size: 11px; }
+@media (prefers-color-scheme: dark) { .kv { color: #aaa; } }
+.two-col { display: flex; gap: 16px; flex-wrap: wrap; }
+.two-col > div { flex: 1; min-width: 260px; }
+.result-box { padding: 6px 10px; border-radius: 4px; background: #f5f5f5; }
+@media (prefers-color-scheme: dark) { .result-box { background: #1a1a1a; } }
+.depth-badge { background: #2e7d32; color: white; font-size: 10px; padding: 1px 6px; border-radius: 3px; margin-left: 6px; }
+.toc { background: #f0f0f0; padding: 10px 16px; border-radius: 6px; }
+@media (prefers-color-scheme: dark) { .toc { background: #222; } }
+</style></head><body>
+<h1>Multi-Level Nested (N2+) Search &mdash; mustang-nested-testkit Results</h1><p><b>Branch:</b> <code>shreanu/nested-poc-search-rewrite</code><br>
+<b>Feature under test:</b> multi-level (2 through 7 deep) dotted nested-path query support, INCLUDING
+Lucene delegation/acceleration for keyword-equality leaves at any depth &mdash; both bare single-conjunct
+equalities (e.g. <code>products.variants.color = "red"</code> alone) and compound predicates
+(equality AND-ed with a range/other clause, via the child-grain split).<br>
+<b>Engine path:</b> <code>ExprTreeBuilder</code> descends through each nested-array boundary, wrapping the
+leaf comparison in one <code>{"nested":"&lt;hop&gt;","inner":...}</code> JSON layer per boundary crossed,
+evaluated by the <code>NESTED_ANY_MATCH_EXPR</code> Rust UDF. A single-conjunct equality leaf (at any depth)
+is now recognized by <code>NestedAnyMatchExprSerializer.canServe</code> and served as a native
+<code>NestedQueryBuilder</code> chain; a compound predicate's equality conjunct is routed to Lucene at
+CHILD-element grain via <code>NESTED_ANY_MATCH_CHILD</code>, intersecting with the range/other clause at the
+SAME element before the &exist; roll-up.</p>
+
+<div class="milestone-box"><b>What's new since the previous report:</b> Lucene delegation now fires for
+multi-level keyword-equality predicates &mdash; both bare single-conjunct AND compound &mdash; not just
+DataFusion-only evaluation. Every case below shows the ACTUAL routing observed live (<code>backends=[...]</code>),
+so you can see exactly which predicates are now Lucene-viable that weren't before.</div>
+
+<div class="toc"><b>Two independent datasets, two independent depths:</b>
+<ol>
+<li><b><code>c3</code></b> (from the corpus, <code>nqx_corpus.jsonl</code>) &mdash; 3 levels deep
+(<code>products &rarr; variants &rarr; specs</code>), 15 cases, golden results pre-recorded from
+vanilla. Result: <b>14/15</b> correct, <b>9/15</b> now Lucene-viable
+(vs. 1/15 before this session's Lucene-delegation work).</li>
+<li><b><code>poc_deep7</code></b> (test-kit dataset, golden results captured live against a running vanilla
+OpenSearch node for this report) &mdash; 7 levels deep, depths 2 through 7, plus a compound-AND, an EXISTS,
+and a cross-branch case. Result: <b>10/10</b> correct, <b>7/10</b>
+now Lucene-viable.</li>
+</ol>
+<b>Combined: 24/25 passed (96%)</b>, <b>16/25
+now Lucene-viable</b> &mdash; the single correctness miss (in the <code>c3</code> set) is a pre-existing,
+documented negation-scoping ambiguity, unrelated to the Lucene-delegation work.
+</div>
+<h2>Part 1 &mdash; index <code>c3</code>: 3-level nested, corpus-recorded golden results</h2><p>Mapping (3 levels of <code>nested</code>, one array boundary per level):</p>
+<table><thead><tr><th>Field</th><th>Type</th></tr></thead><tbody>
+<tr><td><code>title</code></td><td>keyword</td></tr>
+<tr><td><code>products</code></td><td>nested &mdash; array of {pname: keyword, variants: nested}</td></tr>
+<tr><td><code>products.variants</code></td><td>nested (level 2) &mdash; array of {color: keyword, price: integer, specs: nested}</td></tr>
+<tr><td><code>products.variants.specs</code></td><td>nested (level 3) &mdash; array of {key: keyword, val: integer}</td></tr>
+</tbody></table>
+<p>Index settings: <code>index.pluggable.dataformat=composite</code>,
+<code>index.composite.primary_data_format=parquet</code>,
+<code>index.composite.secondary_data_formats=lucene</code>.</p>
+<p><b>Documents (7):</b></p>
+<div class="doc-block">
+<div class="doc-entry"><b>C1:</b><pre>{
+  &quot;title&quot;: &quot;C1&quot;,
+  &quot;products&quot;: [
+    {
+      &quot;pname&quot;: &quot;Widget&quot;,
+      &quot;variants&quot;: [
+        {
+          &quot;color&quot;: &quot;red&quot;,
+          &quot;price&quot;: 200,
+          &quot;specs&quot;: [
+            {
+              &quot;key&quot;: &quot;weight&quot;,
+              &quot;val&quot;: 2
+            },
+            {
+              &quot;key&quot;: &quot;size&quot;,
+              &quot;val&quot;: 10
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}</pre></div><div class="doc-entry"><b>C2:</b><pre>{
+  &quot;title&quot;: &quot;C2&quot;,
+  &quot;products&quot;: [
+    {
+      &quot;pname&quot;: &quot;Sprocket&quot;,
+      &quot;variants&quot;: [
+        {
+          &quot;color&quot;: &quot;red&quot;,
+          &quot;price&quot;: 50,
+          &quot;specs&quot;: [
+            {
+              &quot;key&quot;: &quot;weight&quot;,
+              &quot;val&quot;: 2
+            },
+            {
+              &quot;key&quot;: &quot;size&quot;,
+              &quot;val&quot;: 10
+            }
+          ]
+        },
+        {
+          &quot;color&quot;: &quot;green&quot;,
+          &quot;price&quot;: 200,
+          &quot;specs&quot;: []
+        }
+      ]
+    }
+  ]
+}</pre></div><div class="doc-entry"><b>C3:</b><pre>{
+  &quot;title&quot;: &quot;C3&quot;,
+  &quot;products&quot;: []
+}</pre></div><div class="doc-entry"><b>C4:</b><pre>{
+  &quot;title&quot;: &quot;C4&quot;,
+  &quot;products&quot;: []
+}</pre></div><div class="doc-entry"><b>C5:</b><pre>{
+  &quot;title&quot;: &quot;C5&quot;,
+  &quot;products&quot;: [
+    {
+      &quot;pname&quot;: &quot;Thingamajig&quot;,
+      &quot;variants&quot;: [
+        {
+          &quot;color&quot;: &quot;red&quot;,
+          &quot;price&quot;: 100,
+          &quot;specs&quot;: []
+        }
+      ]
+    }
+  ]
+}</pre></div><div class="doc-entry"><b>C6:</b><pre>{
+  &quot;title&quot;: &quot;C6&quot;,
+  &quot;products&quot;: [
+    {
+      &quot;pname&quot;: &quot;Gadget&quot;,
+      &quot;variants&quot;: [
+        {
+          &quot;color&quot;: &quot;blue&quot;,
+          &quot;price&quot;: 100,
+          &quot;specs&quot;: [
+            {
+              &quot;key&quot;: &quot;weight&quot;,
+              &quot;val&quot;: 99
+            }
+          ]
+        },
+        {
+          &quot;color&quot;: &quot;red&quot;,
+          &quot;price&quot;: 100,
+          &quot;specs&quot;: [
+            {
+              &quot;key&quot;: &quot;weight&quot;,
+              &quot;val&quot;: 2
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}</pre></div><div class="doc-entry"><b>C7:</b><pre>{
+  &quot;title&quot;: &quot;C7&quot;,
+  &quot;products&quot;: [
+    {
+      &quot;pname&quot;: &quot;Doohickey&quot;,
+      &quot;variants&quot;: [
+        {
+          &quot;color&quot;: &quot;red&quot;,
+          &quot;price&quot;: 120,
+          &quot;specs&quot;: [
+            {
+              &quot;key&quot;: &quot;weight&quot;,
+              &quot;val&quot;: 60
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}</pre></div></div><h3>Summary (c3)</h3><table><thead><tr><th>Total cases</th><th>Matched vanilla golden</th><th>Mismatched</th><th>Pass rate</th><th>Now Lucene-viable</th></tr></thead><tbody><tr class="warn"><td class="num">15</td><td class="num">14</td><td class="num">1</td><td class="num">93%</td><td class="num">9</td></tr></tbody></table><h3>Per-case results (c3, all cases in the corpus touching this index)</h3><p><span class="badge badge-pass">MATCH</span> = mustang result equals vanilla golden_result &nbsp; <span class="badge badge-fail">MISMATCH</span> = differs (see note) &nbsp; <span class="badge badge-fam">family</span> = corpus family &nbsp; <span class="badge badge-lucene">lucene-viable</span> = at least one predicate now routes to Lucene.</p><div class="case-card pass"><div class="case-title">f6_000_spec_keyWeight <span class="badge badge-pass">MATCH</span> <span class="badge badge-lucene">lucene-viable</span><span class="badge badge-fam">F6_deep</span><span class="depth-badge">depth 3</span></div><div class="kv">deep nested(products.variants.specs: products.variants.specs.key=&quot;weight&quot;)</div><p><b>PPL query (run against mustang):</b></p><pre>source=c3 | where products.variants.specs.key=&quot;weight&quot; | fields title</pre><p><b>Delegation routing observed (live, this run):</b> <code>NESTED_ANY_MATCH_EXPR &rarr; backends=['datafusion', 'lucene']</code></p><div class="two-col"><div><p><b>Expected (vanilla golden_result):</b></p><div class="result-box"><code>[&#x27;C1&#x27;, &#x27;C2&#x27;, &#x27;C6&#x27;, &#x27;C7&#x27;]</code></div></div><div><p><b>Got (mustang, this branch):</b></p><div class="result-box"><code>[&#x27;C1&#x27;, &#x27;C2&#x27;, &#x27;C6&#x27;, &#x27;C7&#x27;]</code></div></div></div></div><div class="case-card pass"><div class="case-title">f6_001_spec_valGt50 <span class="badge badge-pass">MATCH</span> <span class="badge badge-df">datafusion-only</span><span class="badge badge-fam">F6_deep</span><span class="depth-badge">depth 3</span></div><div class="kv">deep nested(products.variants.specs: products.variants.specs.val&gt;50)</div><p><b>PPL query (run against mustang):</b></p><pre>source=c3 | where products.variants.specs.val&gt;50 | fields title</pre><p><b>Delegation routing observed (live, this run):</b> <code>NESTED_ANY_MATCH_EXPR &rarr; backends=['datafusion']</code></p><div class="two-col"><div><p><b>Expected (vanilla golden_result):</b></p><div class="result-box"><code>[&#x27;C6&#x27;, &#x27;C7&#x27;]</code></div></div><div><p><b>Got (mustang, this branch):</b></p><div class="result-box"><code>[&#x27;C6&#x27;, &#x27;C7&#x27;]</code></div></div></div></div><div class="case-card pass"><div class="case-title">f6_002_spec_keySize <span class="badge badge-pass">MATCH</span> <span class="badge badge-lucene">lucene-viable</span><span class="badge badge-fam">F6_deep</span><span class="depth-badge">depth 3</span></div><div class="kv">deep nested(products.variants.specs: products.variants.specs.key=&quot;size&quot;)</div><p><b>PPL query (run against mustang):</b></p><pre>source=c3 | where products.variants.specs.key=&quot;size&quot; | fields title</pre><p><b>Delegation routing observed (live, this run):</b> <code>NESTED_ANY_MATCH_EXPR &rarr; backends=['datafusion', 'lucene']</code></p><div class="two-col"><div><p><b>Expected (vanilla golden_result):</b></p><div class="result-box"><code>[&#x27;C1&#x27;, &#x27;C2&#x27;]</code></div></div><div><p><b>Got (mustang, this branch):</b></p><div class="result-box"><code>[&#x27;C1&#x27;, &#x27;C2&#x27;]</code></div></div></div></div><div class="case-card pass"><div class="case-title">f6_003_spec_valLte5 <span class="badge badge-pass">MATCH</span> <span class="badge badge-df">datafusion-only</span><span class="badge badge-fam">F6_deep</span><span class="depth-badge">depth 3</span></div><div class="kv">deep nested(products.variants.specs: products.variants.specs.val&lt;=5)</div><p><b>PPL query (run against mustang):</b></p><pre>source=c3 | where products.variants.specs.val&lt;=5 | fields title</pre><p><b>Delegation routing observed (live, this run):</b> <code>NESTED_ANY_MATCH_EXPR &rarr; backends=['datafusion']</code></p><div class="two-col"><div><p><b>Expected (vanilla golden_result):</b></p><div class="result-box"><code>[&#x27;C1&#x27;, &#x27;C2&#x27;, &#x27;C6&#x27;]</code></div></div><div><p><b>Got (mustang, this branch):</b></p><div class="result-box"><code>[&#x27;C1&#x27;, &#x27;C2&#x27;, &#x27;C6&#x27;]</code></div></div></div></div><div class="case-card pass"><div class="case-title">f6_004_spec_weight_and_gt50 <span class="badge badge-pass">MATCH</span> <span class="badge badge-lucene">lucene-viable</span><span class="badge badge-fam">F6_deep</span><span class="depth-badge">depth 3</span></div><div class="kv">deep nested(products.variants.specs: key=weight AND val&gt;50) — deepest element-grain ∧</div><p><b>PPL query (run against mustang):</b></p><pre>source=c3 | where products.variants.specs.key=&quot;weight&quot; and products.variants.specs.val&gt;50 | fields title</pre><p><b>Delegation routing observed (live, this run):</b> <code>NESTED_ANY_MATCH_EXPR &rarr; backends=['datafusion'], NESTED_ANY_MATCH_CHILD &rarr; backends=['datafusion', 'lucene']</code></p><div class="two-col"><div><p><b>Expected (vanilla golden_result):</b></p><div class="result-box"><code>[&#x27;C6&#x27;, &#x27;C7&#x27;]</code></div></div><div><p><b>Got (mustang, this branch):</b></p><div class="result-box"><code>[&#x27;C6&#x27;, &#x27;C7&#x27;]</code></div></div></div></div><div class="case-card pass"><div class="case-title">f6_005_spec_weight_and_lte5 <span class="badge badge-pass">MATCH</span> <span class="badge badge-lucene">lucene-viable</span><span class="badge badge-fam">F6_deep</span><span class="depth-badge">depth 3</span></div><div class="kv">deep nested(products.variants.specs: key=weight AND val&lt;=5)</div><p><b>PPL query (run against mustang):</b></p><pre>source=c3 | where products.variants.specs.key=&quot;weight&quot; and products.variants.specs.val&lt;=5 | fields title</pre><p><b>Delegation routing observed (live, this run):</b> <code>NESTED_ANY_MATCH_EXPR &rarr; backends=['datafusion'], NESTED_ANY_MATCH_CHILD &rarr; backends=['datafusion', 'lucene']</code></p><div class="two-col"><div><p><b>Expected (vanilla golden_result):</b></p><div class="result-box"><code>[&#x27;C1&#x27;, &#x27;C2&#x27;, &#x27;C6&#x27;]</code></div></div><div><p><b>Got (mustang, this branch):</b></p><div class="result-box"><code>[&#x27;C1&#x27;, &#x27;C2&#x27;, &#x27;C6&#x27;]</code></div></div></div></div><div class="case-card pass"><div class="case-title">f6_006_var_blue_and_100 <span class="badge badge-pass">MATCH</span> <span class="badge badge-lucene">lucene-viable</span><span class="badge badge-fam">F6_deep</span><span class="depth-badge">depth 2</span></div><div class="kv">deep nested(products.variants: color=blue AND price=100) — variant element-grain ∧</div><p><b>PPL query (run against mustang):</b></p><pre>source=c3 | where products.variants.color=&quot;blue&quot; and products.variants.price=100 | fields title</pre><p><b>Delegation routing observed (live, this run):</b> <code>NESTED_ANY_MATCH_EXPR &rarr; backends=['datafusion'], NESTED_ANY_MATCH_CHILD &rarr; backends=['datafusion', 'lucene']</code></p><div class="two-col"><div><p><b>Expected (vanilla golden_result):</b></p><div class="result-box"><code>[&#x27;C6&#x27;]</code></div></div><div><p><b>Got (mustang, this branch):</b></p><div class="result-box"><code>[&#x27;C6&#x27;]</code></div></div></div></div><div class="case-card pass"><div class="case-title">f6_007_var_red_and_gte100 <span class="badge badge-pass">MATCH</span> <span class="badge badge-lucene">lucene-viable</span><span class="badge badge-fam">F6_deep</span><span class="depth-badge">depth 2</span></div><div class="kv">deep nested(products.variants: color=red AND price&gt;=100)</div><p><b>PPL query (run against mustang):</b></p><pre>source=c3 | where products.variants.color=&quot;red&quot; and products.variants.price&gt;=100 | fields title</pre><p><b>Delegation routing observed (live, this run):</b> <code>NESTED_ANY_MATCH_EXPR &rarr; backends=['datafusion'], NESTED_ANY_MATCH_CHILD &rarr; backends=['datafusion', 'lucene']</code></p><div class="two-col"><div><p><b>Expected (vanilla golden_result):</b></p><div class="result-box"><code>[&#x27;C1&#x27;, &#x27;C5&#x27;, &#x27;C6&#x27;, &#x27;C7&#x27;]</code></div></div><div><p><b>Got (mustang, this branch):</b></p><div class="result-box"><code>[&#x27;C1&#x27;, &#x27;C5&#x27;, &#x27;C6&#x27;, &#x27;C7&#x27;]</code></div></div></div></div><div class="case-card pass"><div class="case-title">f6_008_var_colorRed <span class="badge badge-pass">MATCH</span> <span class="badge badge-lucene">lucene-viable</span><span class="badge badge-fam">F6_deep</span><span class="depth-badge">depth 2</span></div><div class="kv">deep nested(products.variants: products.variants.color=&quot;red&quot;)</div><p><b>PPL query (run against mustang):</b></p><pre>source=c3 | where products.variants.color=&quot;red&quot; | fields title</pre><p><b>Delegation routing observed (live, this run):</b> <code>NESTED_ANY_MATCH_EXPR &rarr; backends=['datafusion', 'lucene']</code></p><div class="two-col"><div><p><b>Expected (vanilla golden_result):</b></p><div class="result-box"><code>[&#x27;C1&#x27;, &#x27;C2&#x27;, &#x27;C5&#x27;, &#x27;C6&#x27;, &#x27;C7&#x27;]</code></div></div><div><p><b>Got (mustang, this branch):</b></p><div class="result-box"><code>[&#x27;C1&#x27;, &#x27;C2&#x27;, &#x27;C5&#x27;, &#x27;C6&#x27;, &#x27;C7&#x27;]</code></div></div></div></div><div class="case-card pass"><div class="case-title">f6_009_var_priceGt150 <span class="badge badge-pass">MATCH</span> <span class="badge badge-df">datafusion-only</span><span class="badge badge-fam">F6_deep</span><span class="depth-badge">depth 2</span></div><div class="kv">deep nested(products.variants: products.variants.price&gt;150)</div><p><b>PPL query (run against mustang):</b></p><pre>source=c3 | where products.variants.price&gt;150 | fields title</pre><p><b>Delegation routing observed (live, this run):</b> <code>NESTED_ANY_MATCH_EXPR &rarr; backends=['datafusion']</code></p><div class="two-col"><div><p><b>Expected (vanilla golden_result):</b></p><div class="result-box"><code>[&#x27;C1&#x27;, &#x27;C2&#x27;]</code></div></div><div><p><b>Got (mustang, this branch):</b></p><div class="result-box"><code>[&#x27;C1&#x27;, &#x27;C2&#x27;]</code></div></div></div></div><div class="case-card pass"><div class="case-title">f6_010_var_colorGreen <span class="badge badge-pass">MATCH</span> <span class="badge badge-lucene">lucene-viable</span><span class="badge badge-fam">F6_deep</span><span class="depth-badge">depth 2</span></div><div class="kv">deep nested(products.variants: products.variants.color=&quot;green&quot;)</div><p><b>PPL query (run against mustang):</b></p><pre>source=c3 | where products.variants.color=&quot;green&quot; | fields title</pre><p><b>Delegation routing observed (live, this run):</b> <code>NESTED_ANY_MATCH_EXPR &rarr; backends=['datafusion', 'lucene']</code></p><div class="two-col"><div><p><b>Expected (vanilla golden_result):</b></p><div class="result-box"><code>[&#x27;C2&#x27;]</code></div></div><div><p><b>Got (mustang, this branch):</b></p><div class="result-box"><code>[&#x27;C2&#x27;]</code></div></div></div></div><div class="case-card pass"><div class="case-title">f6_011_prod_widget <span class="badge badge-pass">MATCH</span> <span class="badge badge-lucene">lucene-viable</span><span class="badge badge-fam">F6_deep</span><span class="depth-badge">depth 1</span></div><div class="kv">nested(products: pname=Widget)</div><p><b>PPL query (run against mustang):</b></p><pre>source=c3 | where products.pname=&quot;Widget&quot; | fields title</pre><p><b>Delegation routing observed (live, this run):</b> <code>NESTED_ANY_MATCH_EXPR &rarr; backends=['datafusion', 'lucene']</code></p><div class="two-col"><div><p><b>Expected (vanilla golden_result):</b></p><div class="result-box"><code>[&#x27;C1&#x27;]</code></div></div><div><p><b>Got (mustang, this branch):</b></p><div class="result-box"><code>[&#x27;C1&#x27;]</code></div></div></div></div><div class="case-card fail"><div class="case-title">f6_012_spec_notexists_valgt50 <span class="badge badge-fail">MISMATCH</span> <span class="badge badge-df">datafusion-only</span><span class="badge badge-fam">F6_deep</span><span class="depth-badge">depth 3</span></div><div class="kv">¬∃ must_not[deep nested(products.variants.specs: val&gt;50)] — parent-grain over 3 levels</div><div class="kv"><span class="badge badge-note">ambiguous_neg_grain</span></div><p><b>PPL query (run against mustang):</b></p><pre>source=c3 | where not (products.variants.specs.val&gt;50) | fields title</pre><p><b>Delegation routing observed (live, this run):</b> <code>NESTED_ANY_MATCH_EXPR &rarr; backends=['datafusion']</code></p><div class="two-col"><div><p><b>Expected (vanilla golden_result):</b></p><div class="result-box"><code>[&#x27;C1&#x27;, &#x27;C2&#x27;, &#x27;C3&#x27;, &#x27;C4&#x27;, &#x27;C5&#x27;]</code></div></div><div><p><b>Got (mustang, this branch):</b></p><div class="result-box"><code>[&#x27;C1&#x27;, &#x27;C2&#x27;, &#x27;C6&#x27;]</code></div></div></div><div class="note-box"><b>Not a regression.</b> This is the &not;&exist; (must_not) reading of a
+raw PPL <code>not(nested)</code> negation, which is genuinely ambiguous at the language level: vanilla
+OpenSearch's <code>must_not(nested(...))</code> means &ldquo;no element anywhere satisfies the inner
+predicate&rdquo; (&not;&exist;), while mustang evaluates the per-element boolean and negates it
+elementwise before rolling up existentially (&exist;&not;: &ldquo;some element fails the predicate&rdquo;).
+Both are defensible readings of the same PPL text; the corpus records both as separate case IDs
+(this one is the &not;&exist; reading) and its sibling <code>f6_013</code> (the &exist;&not; reading) matches
+exactly. This is the same, previously-documented ambiguity that already exists for the single-level
+<code>cmts</code>/<code>cmts2</code> negation cases (family <code>F3_neg_grain</code>) &mdash; unrelated to
+the Lucene-delegation work in this report.</div></div><div class="case-card pass"><div class="case-title">f6_013_spec_existsneg_valgt50 <span class="badge badge-pass">MATCH</span> <span class="badge badge-df">datafusion-only</span><span class="badge badge-fam">F6_deep</span><span class="depth-badge">depth 3</span></div><div class="kv">∃¬ deep nested(products.variants.specs: NOT val&gt;50) — some spec fails, element-grain</div><div class="kv"><span class="badge badge-note">ambiguous_neg_grain</span></div><p><b>PPL query (run against mustang):</b></p><pre>source=c3 | where not (products.variants.specs.val&gt;50) | fields title</pre><p><b>Delegation routing observed (live, this run):</b> <code>NESTED_ANY_MATCH_EXPR &rarr; backends=['datafusion']</code></p><div class="two-col"><div><p><b>Expected (vanilla golden_result):</b></p><div class="result-box"><code>[&#x27;C1&#x27;, &#x27;C2&#x27;, &#x27;C6&#x27;]</code></div></div><div><p><b>Got (mustang, this branch):</b></p><div class="result-box"><code>[&#x27;C1&#x27;, &#x27;C2&#x27;, &#x27;C6&#x27;]</code></div></div></div></div><div class="case-card pass"><div class="case-title">f8_011_c3_any_spec <span class="badge badge-pass">MATCH</span> <span class="badge badge-df">datafusion-only</span><span class="badge badge-fam">F8_edge</span><span class="depth-badge">depth 3</span></div><div class="kv">deep nested(specs: val exists) — C3/C4/C5 (empty at some level) excluded</div><p><b>PPL query (run against mustang):</b></p><pre>source=c3 | where products.variants.specs.val is not null | fields title</pre><p><b>Delegation routing observed (live, this run):</b> <code>NESTED_ANY_MATCH_EXPR &rarr; backends=['datafusion']</code></p><div class="two-col"><div><p><b>Expected (vanilla golden_result):</b></p><div class="result-box"><code>[&#x27;C1&#x27;, &#x27;C2&#x27;, &#x27;C6&#x27;, &#x27;C7&#x27;]</code></div></div><div><p><b>Got (mustang, this branch):</b></p><div class="result-box"><code>[&#x27;C1&#x27;, &#x27;C2&#x27;, &#x27;C6&#x27;, &#x27;C7&#x27;]</code></div></div></div></div><h2>Part 2 &mdash; index <code>poc_deep7</code>: 7-level nested, golden results captured live against vanilla</h2><div class="note-box"><code>poc_deep7</code> is NOT part of <code>nqx_corpus.jsonl</code> &mdash;
+it ships in <code>mustang-nested-testkit</code> as a raw dataset + ingest script with no pre-recorded golden
+results. For this report, the SAME 3 documents were ingested into a real, unmodified vanilla OpenSearch node
+(port 9200) and a mustang composite node (port 9000, this branch), and each case's golden result was
+captured live from vanilla's native <code>nested</code> query DSL, then compared against mustang's PPL
+result AND its live delegation routing for the equivalent dotted path.</div><p>Mapping (7 levels of <code>nested</code>, one array boundary per level, plus a sibling
+<code>auditors</code> nested array at the top level):</p>
+<table><thead><tr><th>Field</th><th>Type</th></tr></thead><tbody>
+<tr><td><code>company</code></td><td>keyword</td></tr>
+<tr><td><code>hq</code></td><td>keyword</td></tr>
+<tr><td><code>auditors</code></td><td>nested (level 1, sibling branch) &mdash; array of {who: keyword, stars: integer}</td></tr>
+<tr><td><code>regions</code></td><td>nested (level 1) &mdash; array of {region: keyword, offices: nested, divisions: nested}</td></tr>
+<tr><td><code>regions.offices</code></td><td>nested (level 2) &mdash; array of {city: keyword, floor: integer}</td></tr>
+<tr><td><code>regions.divisions</code></td><td>nested (level 2) &mdash; array of {division: keyword, departments: nested}</td></tr>
+<tr><td><code>regions.divisions.departments</code></td><td>nested (level 3) &mdash; array of {dept: keyword, teams: nested}</td></tr>
+<tr><td><code>regions.divisions.departments.teams</code></td><td>nested (level 4) &mdash; array of {team: keyword, members: nested}</td></tr>
+<tr><td><code>regions.divisions.departments.teams.members</code></td><td>nested (level 5) &mdash; array of {name: keyword, tasks: nested}</td></tr>
+<tr><td><code>regions.divisions.departments.teams.members.tasks</code></td><td>nested (level 6) &mdash; array of {task: keyword, tags: nested}</td></tr>
+<tr><td><code>regions.divisions.departments.teams.members.tasks.tags</code></td><td>nested (level 7) &mdash; array of {label: keyword, priority: integer}</td></tr>
+</tbody></table>
+<p>Index settings on the mustang side: <code>index.pluggable.dataformat=composite</code>,
+<code>index.composite.primary_data_format=parquet</code>,
+<code>index.composite.secondary_data_formats=lucene</code>. The vanilla side uses a plain (non-composite)
+index &mdash; it is real, unmodified OpenSearch, evaluating its own native <code>nested</code> query DSL.</p>
+<p><b>Documents (3 companies, each a full 7-level tree):</b></p>
+<div class="doc-block">
+<div class="doc-entry"><b>Acme:</b><pre>{
+  &quot;company&quot;: &quot;Acme&quot;,
+  &quot;hq&quot;: &quot;Seattle&quot;,
+  &quot;auditors&quot;: [
+    {
+      &quot;who&quot;: &quot;ann&quot;,
+      &quot;stars&quot;: 5
+    }
+  ],
+  &quot;regions&quot;: [
+    {
+      &quot;region&quot;: &quot;NA&quot;,
+      &quot;offices&quot;: [
+        {
+          &quot;city&quot;: &quot;Seattle&quot;,
+          &quot;floor&quot;: 3
+        }
+      ],
+      &quot;divisions&quot;: [
+        {
+          &quot;division&quot;: &quot;Cloud&quot;,
+          &quot;departments&quot;: [
+            {
+              &quot;dept&quot;: &quot;Eng&quot;,
+              &quot;teams&quot;: [
+                {
+                  &quot;team&quot;: &quot;Platform&quot;,
+                  &quot;members&quot;: [
+                    {
+                      &quot;name&quot;: &quot;alice&quot;,
+                      &quot;tasks&quot;: [
+                        {
+                          &quot;task&quot;: &quot;migrate&quot;,
+                          &quot;tags&quot;: [
+                            {
+                              &quot;label&quot;: &quot;urgent&quot;,
+                              &quot;priority&quot;: 1
+                            },
+                            {
+                              &quot;label&quot;: &quot;backend&quot;,
+                              &quot;priority&quot;: 2
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      &quot;name&quot;: &quot;bob&quot;,
+                      &quot;tasks&quot;: [
+                        {
+                          &quot;task&quot;: &quot;design&quot;,
+                          &quot;tags&quot;: [
+                            {
+                              &quot;label&quot;: &quot;backend&quot;,
+                              &quot;priority&quot;: 2
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  &quot;team&quot;: &quot;Data&quot;,
+                  &quot;members&quot;: [
+                    {
+                      &quot;name&quot;: &quot;carol&quot;,
+                      &quot;tasks&quot;: [
+                        {
+                          &quot;task&quot;: &quot;etl&quot;,
+                          &quot;tags&quot;: [
+                            {
+                              &quot;label&quot;: &quot;chore&quot;,
+                              &quot;priority&quot;: 3
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}</pre></div><div class="doc-entry"><b>Globex:</b><pre>{
+  &quot;company&quot;: &quot;Globex&quot;,
+  &quot;hq&quot;: &quot;Berlin&quot;,
+  &quot;auditors&quot;: [
+    {
+      &quot;who&quot;: &quot;bill&quot;,
+      &quot;stars&quot;: 3
+    }
+  ],
+  &quot;regions&quot;: [
+    {
+      &quot;region&quot;: &quot;EU&quot;,
+      &quot;offices&quot;: [
+        {
+          &quot;city&quot;: &quot;Berlin&quot;,
+          &quot;floor&quot;: 9
+        }
+      ],
+      &quot;divisions&quot;: [
+        {
+          &quot;division&quot;: &quot;Research&quot;,
+          &quot;departments&quot;: [
+            {
+              &quot;dept&quot;: &quot;Labs&quot;,
+              &quot;teams&quot;: [
+                {
+                  &quot;team&quot;: &quot;Platform&quot;,
+                  &quot;members&quot;: [
+                    {
+                      &quot;name&quot;: &quot;dave&quot;,
+                      &quot;tasks&quot;: [
+                        {
+                          &quot;task&quot;: &quot;study&quot;,
+                          &quot;tags&quot;: [
+                            {
+                              &quot;label&quot;: &quot;chore&quot;,
+                              &quot;priority&quot;: 3
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}</pre></div><div class="doc-entry"><b>Initech:</b><pre>{
+  &quot;company&quot;: &quot;Initech&quot;,
+  &quot;hq&quot;: &quot;Tokyo&quot;,
+  &quot;auditors&quot;: [
+    {
+      &quot;who&quot;: &quot;cara&quot;,
+      &quot;stars&quot;: 2
+    }
+  ],
+  &quot;regions&quot;: [
+    {
+      &quot;region&quot;: &quot;APAC&quot;,
+      &quot;offices&quot;: [
+        {
+          &quot;city&quot;: &quot;Tokyo&quot;,
+          &quot;floor&quot;: 20
+        }
+      ],
+      &quot;divisions&quot;: [
+        {
+          &quot;division&quot;: &quot;Sales&quot;,
+          &quot;departments&quot;: [
+            {
+              &quot;dept&quot;: &quot;Field&quot;,
+              &quot;teams&quot;: [
+                {
+                  &quot;team&quot;: &quot;West&quot;,
+                  &quot;members&quot;: [
+                    {
+                      &quot;name&quot;: &quot;erin&quot;,
+                      &quot;tasks&quot;: [
+                        {
+                          &quot;task&quot;: &quot;pitch&quot;,
+                          &quot;tags&quot;: [
+                            {
+                              &quot;label&quot;: &quot;client&quot;,
+                              &quot;priority&quot;: 4
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}</pre></div></div><h3>Summary (poc_deep7)</h3><table><thead><tr><th>Total cases</th><th>Matched vanilla golden</th><th>Mismatched</th><th>Pass rate</th><th>Now Lucene-viable</th></tr></thead><tbody><tr class="pass"><td class="num">10</td><td class="num">10</td><td class="num">0</td><td class="num">100%</td><td class="num">7</td></tr></tbody></table><h3>Per-case results (poc_deep7, depths 2 through 7)</h3><p>Each case below was run BOTH ways live at the time this report was generated: mustang PPL (with profiling) against the live composite node, and the hand-written vanilla-equivalent DSL against a live, separately-running, unmodified vanilla OpenSearch node.</p><div class="case-card pass"><div class="case-title">d2_office_city_seattle <span class="badge badge-pass">MATCH</span> <span class="badge badge-lucene">lucene-viable</span><span class="badge badge-src">poc_deep7 / live vanilla</span><span class="depth-badge">depth 2</span></div><div class="kv">depth-2: regions.offices.city = Seattle</div><p><b>PPL query (run against mustang, port 9000):</b></p><pre>source=poc_deep7 | where regions.offices.city=&quot;Seattle&quot; | fields company</pre><p><b>Equivalent vanilla OpenSearch DSL (run live against vanilla, port 9200, to produce the golden result):</b></p><pre>{
+  &quot;_source&quot;: [
+    &quot;company&quot;
+  ],
+  &quot;query&quot;: {
+    &quot;nested&quot;: {
+      &quot;path&quot;: &quot;regions&quot;,
+      &quot;query&quot;: {
+        &quot;nested&quot;: {
+          &quot;path&quot;: &quot;regions.offices&quot;,
+          &quot;query&quot;: {
+            &quot;term&quot;: {
+              &quot;regions.offices.city&quot;: &quot;Seattle&quot;
+            }
+          }
+        }
+      }
+    }
+  }
+}</pre><p><b>Delegation routing observed (mustang, live):</b> <code>NESTED_ANY_MATCH_EXPR &rarr; backends=['datafusion', 'lucene']</code></p><div class="two-col"><div><p><b>Expected (live vanilla result):</b></p><div class="result-box"><code>[&#x27;Acme&#x27;]</code></div></div><div><p><b>Got (mustang, this branch):</b></p><div class="result-box"><code>[&#x27;Acme&#x27;]</code></div></div></div></div><div class="case-card pass"><div class="case-title">d2_office_floor_gt5 <span class="badge badge-pass">MATCH</span> <span class="badge badge-df">datafusion-only</span><span class="badge badge-src">poc_deep7 / live vanilla</span><span class="depth-badge">depth 2</span></div><div class="kv">depth-2: regions.offices.floor &gt; 5</div><p><b>PPL query (run against mustang, port 9000):</b></p><pre>source=poc_deep7 | where regions.offices.floor&gt;5 | fields company</pre><p><b>Equivalent vanilla OpenSearch DSL (run live against vanilla, port 9200, to produce the golden result):</b></p><pre>{
+  &quot;_source&quot;: [
+    &quot;company&quot;
+  ],
+  &quot;query&quot;: {
+    &quot;nested&quot;: {
+      &quot;path&quot;: &quot;regions&quot;,
+      &quot;query&quot;: {
+        &quot;nested&quot;: {
+          &quot;path&quot;: &quot;regions.offices&quot;,
+          &quot;query&quot;: {
+            &quot;range&quot;: {
+              &quot;regions.offices.floor&quot;: {
+                &quot;gt&quot;: 5
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}</pre><p><b>Delegation routing observed (mustang, live):</b> <code>NESTED_ANY_MATCH_EXPR &rarr; backends=['datafusion']</code></p><div class="two-col"><div><p><b>Expected (live vanilla result):</b></p><div class="result-box"><code>[&#x27;Globex&#x27;, &#x27;Initech&#x27;]</code></div></div><div><p><b>Got (mustang, this branch):</b></p><div class="result-box"><code>[&#x27;Globex&#x27;, &#x27;Initech&#x27;]</code></div></div></div></div><div class="case-card pass"><div class="case-title">d3_dept_eng <span class="badge badge-pass">MATCH</span> <span class="badge badge-lucene">lucene-viable</span><span class="badge badge-src">poc_deep7 / live vanilla</span><span class="depth-badge">depth 3</span></div><div class="kv">depth-3: regions.divisions.departments.dept = Eng</div><p><b>PPL query (run against mustang, port 9000):</b></p><pre>source=poc_deep7 | where regions.divisions.departments.dept=&quot;Eng&quot; | fields company</pre><p><b>Equivalent vanilla OpenSearch DSL (run live against vanilla, port 9200, to produce the golden result):</b></p><pre>{
+  &quot;_source&quot;: [
+    &quot;company&quot;
+  ],
+  &quot;query&quot;: {
+    &quot;nested&quot;: {
+      &quot;path&quot;: &quot;regions&quot;,
+      &quot;query&quot;: {
+        &quot;nested&quot;: {
+          &quot;path&quot;: &quot;regions.divisions&quot;,
+          &quot;query&quot;: {
+            &quot;nested&quot;: {
+              &quot;path&quot;: &quot;regions.divisions.departments&quot;,
+              &quot;query&quot;: {
+                &quot;term&quot;: {
+                  &quot;regions.divisions.departments.dept&quot;: &quot;Eng&quot;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}</pre><p><b>Delegation routing observed (mustang, live):</b> <code>NESTED_ANY_MATCH_EXPR &rarr; backends=['datafusion', 'lucene']</code></p><div class="two-col"><div><p><b>Expected (live vanilla result):</b></p><div class="result-box"><code>[&#x27;Acme&#x27;]</code></div></div><div><p><b>Got (mustang, this branch):</b></p><div class="result-box"><code>[&#x27;Acme&#x27;]</code></div></div></div></div><div class="case-card pass"><div class="case-title">d4_team_platform <span class="badge badge-pass">MATCH</span> <span class="badge badge-lucene">lucene-viable</span><span class="badge badge-src">poc_deep7 / live vanilla</span><span class="depth-badge">depth 4</span></div><div class="kv">depth-4: regions.divisions.departments.teams.team = Platform (matches Acme AND Globex, different divisions -- proves each company&#x27;s own descent is independent)</div><p><b>PPL query (run against mustang, port 9000):</b></p><pre>source=poc_deep7 | where regions.divisions.departments.teams.team=&quot;Platform&quot; | fields company</pre><p><b>Equivalent vanilla OpenSearch DSL (run live against vanilla, port 9200, to produce the golden result):</b></p><pre>{
+  &quot;_source&quot;: [
+    &quot;company&quot;
+  ],
+  &quot;query&quot;: {
+    &quot;nested&quot;: {
+      &quot;path&quot;: &quot;regions&quot;,
+      &quot;query&quot;: {
+        &quot;nested&quot;: {
+          &quot;path&quot;: &quot;regions.divisions&quot;,
+          &quot;query&quot;: {
+            &quot;nested&quot;: {
+              &quot;path&quot;: &quot;regions.divisions.departments&quot;,
+              &quot;query&quot;: {
+                &quot;nested&quot;: {
+                  &quot;path&quot;: &quot;regions.divisions.departments.teams&quot;,
+                  &quot;query&quot;: {
+                    &quot;term&quot;: {
+                      &quot;regions.divisions.departments.teams.team&quot;: &quot;Platform&quot;
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}</pre><p><b>Delegation routing observed (mustang, live):</b> <code>NESTED_ANY_MATCH_EXPR &rarr; backends=['datafusion', 'lucene']</code></p><div class="two-col"><div><p><b>Expected (live vanilla result):</b></p><div class="result-box"><code>[&#x27;Acme&#x27;, &#x27;Globex&#x27;]</code></div></div><div><p><b>Got (mustang, this branch):</b></p><div class="result-box"><code>[&#x27;Acme&#x27;, &#x27;Globex&#x27;]</code></div></div></div></div><div class="case-card pass"><div class="case-title">d5_member_alice <span class="badge badge-pass">MATCH</span> <span class="badge badge-lucene">lucene-viable</span><span class="badge badge-src">poc_deep7 / live vanilla</span><span class="depth-badge">depth 5</span></div><div class="kv">depth-5: regions.divisions.departments.teams.members.name = alice</div><p><b>PPL query (run against mustang, port 9000):</b></p><pre>source=poc_deep7 | where regions.divisions.departments.teams.members.name=&quot;alice&quot; | fields company</pre><p><b>Equivalent vanilla OpenSearch DSL (run live against vanilla, port 9200, to produce the golden result):</b></p><pre>{
+  &quot;_source&quot;: [
+    &quot;company&quot;
+  ],
+  &quot;query&quot;: {
+    &quot;nested&quot;: {
+      &quot;path&quot;: &quot;regions&quot;,
+      &quot;query&quot;: {
+        &quot;nested&quot;: {
+          &quot;path&quot;: &quot;regions.divisions&quot;,
+          &quot;query&quot;: {
+            &quot;nested&quot;: {
+              &quot;path&quot;: &quot;regions.divisions.departments&quot;,
+              &quot;query&quot;: {
+                &quot;nested&quot;: {
+                  &quot;path&quot;: &quot;regions.divisions.departments.teams&quot;,
+                  &quot;query&quot;: {
+                    &quot;nested&quot;: {
+                      &quot;path&quot;: &quot;regions.divisions.departments.teams.members&quot;,
+                      &quot;query&quot;: {
+                        &quot;term&quot;: {
+                          &quot;regions.divisions.departments.teams.members.name&quot;: &quot;alice&quot;
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}</pre><p><b>Delegation routing observed (mustang, live):</b> <code>NESTED_ANY_MATCH_EXPR &rarr; backends=['datafusion', 'lucene']</code></p><div class="two-col"><div><p><b>Expected (live vanilla result):</b></p><div class="result-box"><code>[&#x27;Acme&#x27;]</code></div></div><div><p><b>Got (mustang, this branch):</b></p><div class="result-box"><code>[&#x27;Acme&#x27;]</code></div></div></div></div><div class="case-card pass"><div class="case-title">d6_task_migrate <span class="badge badge-pass">MATCH</span> <span class="badge badge-lucene">lucene-viable</span><span class="badge badge-src">poc_deep7 / live vanilla</span><span class="depth-badge">depth 6</span></div><div class="kv">depth-6: regions.divisions.departments.teams.members.tasks.task = migrate</div><p><b>PPL query (run against mustang, port 9000):</b></p><pre>source=poc_deep7 | where regions.divisions.departments.teams.members.tasks.task=&quot;migrate&quot; | fields company</pre><p><b>Equivalent vanilla OpenSearch DSL (run live against vanilla, port 9200, to produce the golden result):</b></p><pre>{
+  &quot;_source&quot;: [
+    &quot;company&quot;
+  ],
+  &quot;query&quot;: {
+    &quot;nested&quot;: {
+      &quot;path&quot;: &quot;regions&quot;,
+      &quot;query&quot;: {
+        &quot;nested&quot;: {
+          &quot;path&quot;: &quot;regions.divisions&quot;,
+          &quot;query&quot;: {
+            &quot;nested&quot;: {
+              &quot;path&quot;: &quot;regions.divisions.departments&quot;,
+              &quot;query&quot;: {
+                &quot;nested&quot;: {
+                  &quot;path&quot;: &quot;regions.divisions.departments.teams&quot;,
+                  &quot;query&quot;: {
+                    &quot;nested&quot;: {
+                      &quot;path&quot;: &quot;regions.divisions.departments.teams.members&quot;,
+                      &quot;query&quot;: {
+                        &quot;nested&quot;: {
+                          &quot;path&quot;: &quot;regions.divisions.departments.teams.members.tasks&quot;,
+                          &quot;query&quot;: {
+                            &quot;term&quot;: {
+                              &quot;regions.divisions.departments.teams.members.tasks.task&quot;: &quot;migrate&quot;
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}</pre><p><b>Delegation routing observed (mustang, live):</b> <code>NESTED_ANY_MATCH_EXPR &rarr; backends=['datafusion', 'lucene']</code></p><div class="two-col"><div><p><b>Expected (live vanilla result):</b></p><div class="result-box"><code>[&#x27;Acme&#x27;]</code></div></div><div><p><b>Got (mustang, this branch):</b></p><div class="result-box"><code>[&#x27;Acme&#x27;]</code></div></div></div></div><div class="case-card pass"><div class="case-title">d7_tag_priority_gte3 <span class="badge badge-pass">MATCH</span> <span class="badge badge-df">datafusion-only</span><span class="badge badge-src">poc_deep7 / live vanilla</span><span class="depth-badge">depth 7</span></div><div class="kv">depth-7 (max): regions.divisions.departments.teams.members.tasks.tags.priority &gt;= 3</div><p><b>PPL query (run against mustang, port 9000):</b></p><pre>source=poc_deep7 | where regions.divisions.departments.teams.members.tasks.tags.priority&gt;=3 | fields company</pre><p><b>Equivalent vanilla OpenSearch DSL (run live against vanilla, port 9200, to produce the golden result):</b></p><pre>{
+  &quot;_source&quot;: [
+    &quot;company&quot;
+  ],
+  &quot;query&quot;: {
+    &quot;nested&quot;: {
+      &quot;path&quot;: &quot;regions&quot;,
+      &quot;query&quot;: {
+        &quot;nested&quot;: {
+          &quot;path&quot;: &quot;regions.divisions&quot;,
+          &quot;query&quot;: {
+            &quot;nested&quot;: {
+              &quot;path&quot;: &quot;regions.divisions.departments&quot;,
+              &quot;query&quot;: {
+                &quot;nested&quot;: {
+                  &quot;path&quot;: &quot;regions.divisions.departments.teams&quot;,
+                  &quot;query&quot;: {
+                    &quot;nested&quot;: {
+                      &quot;path&quot;: &quot;regions.divisions.departments.teams.members&quot;,
+                      &quot;query&quot;: {
+                        &quot;nested&quot;: {
+                          &quot;path&quot;: &quot;regions.divisions.departments.teams.members.tasks&quot;,
+                          &quot;query&quot;: {
+                            &quot;nested&quot;: {
+                              &quot;path&quot;: &quot;regions.divisions.departments.teams.members.tasks.tags&quot;,
+                              &quot;query&quot;: {
+                                &quot;range&quot;: {
+                                  &quot;regions.divisions.departments.teams.members.tasks.tags.priority&quot;: {
+                                    &quot;gte&quot;: 3
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}</pre><p><b>Delegation routing observed (mustang, live):</b> <code>NESTED_ANY_MATCH_EXPR &rarr; backends=['datafusion']</code></p><div class="two-col"><div><p><b>Expected (live vanilla result):</b></p><div class="result-box"><code>[&#x27;Acme&#x27;, &#x27;Globex&#x27;, &#x27;Initech&#x27;]</code></div></div><div><p><b>Got (mustang, this branch):</b></p><div class="result-box"><code>[&#x27;Acme&#x27;, &#x27;Globex&#x27;, &#x27;Initech&#x27;]</code></div></div></div></div><div class="case-card pass"><div class="case-title">d7_tag_backend_and_prio_lte2 <span class="badge badge-pass">MATCH</span> <span class="badge badge-lucene">lucene-viable</span><span class="badge badge-src">poc_deep7 / live vanilla</span><span class="depth-badge">depth 7</span></div><div class="kv">depth-7 compound AND, SAME element grain: tags.label=backend AND tags.priority&lt;=2</div><p><b>PPL query (run against mustang, port 9000):</b></p><pre>source=poc_deep7 | where regions.divisions.departments.teams.members.tasks.tags.label=&quot;backend&quot; and regions.divisions.departments.teams.members.tasks.tags.priority&lt;=2 | fields company</pre><p><b>Equivalent vanilla OpenSearch DSL (run live against vanilla, port 9200, to produce the golden result):</b></p><pre>{
+  &quot;_source&quot;: [
+    &quot;company&quot;
+  ],
+  &quot;query&quot;: {
+    &quot;nested&quot;: {
+      &quot;path&quot;: &quot;regions&quot;,
+      &quot;query&quot;: {
+        &quot;nested&quot;: {
+          &quot;path&quot;: &quot;regions.divisions&quot;,
+          &quot;query&quot;: {
+            &quot;nested&quot;: {
+              &quot;path&quot;: &quot;regions.divisions.departments&quot;,
+              &quot;query&quot;: {
+                &quot;nested&quot;: {
+                  &quot;path&quot;: &quot;regions.divisions.departments.teams&quot;,
+                  &quot;query&quot;: {
+                    &quot;nested&quot;: {
+                      &quot;path&quot;: &quot;regions.divisions.departments.teams.members&quot;,
+                      &quot;query&quot;: {
+                        &quot;nested&quot;: {
+                          &quot;path&quot;: &quot;regions.divisions.departments.teams.members.tasks&quot;,
+                          &quot;query&quot;: {
+                            &quot;nested&quot;: {
+                              &quot;path&quot;: &quot;regions.divisions.departments.teams.members.tasks.tags&quot;,
+                              &quot;query&quot;: {
+                                &quot;bool&quot;: {
+                                  &quot;must&quot;: [
+                                    {
+                                      &quot;term&quot;: {
+                                        &quot;regions.divisions.departments.teams.members.tasks.tags.label&quot;: &quot;backend&quot;
+                                      }
+                                    },
+                                    {
+                                      &quot;range&quot;: {
+                                        &quot;regions.divisions.departments.teams.members.tasks.tags.priority&quot;: {
+                                          &quot;lte&quot;: 2
+                                        }
+                                      }
+                                    }
+                                  ]
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}</pre><p><b>Delegation routing observed (mustang, live):</b> <code>NESTED_ANY_MATCH_EXPR &rarr; backends=['datafusion'], NESTED_ANY_MATCH_CHILD &rarr; backends=['datafusion', 'lucene']</code></p><div class="two-col"><div><p><b>Expected (live vanilla result):</b></p><div class="result-box"><code>[&#x27;Acme&#x27;]</code></div></div><div><p><b>Got (mustang, this branch):</b></p><div class="result-box"><code>[&#x27;Acme&#x27;]</code></div></div></div></div><div class="case-card pass"><div class="case-title">d7_tag_priority_exists <span class="badge badge-pass">MATCH</span> <span class="badge badge-df">datafusion-only</span><span class="badge badge-src">poc_deep7 / live vanilla</span><span class="depth-badge">depth 7</span></div><div class="kv">depth-7 EXISTS: tags.priority IS NOT NULL (sanity check -- all docs have priority set)</div><p><b>PPL query (run against mustang, port 9000):</b></p><pre>source=poc_deep7 | where regions.divisions.departments.teams.members.tasks.tags.priority is not null | fields company</pre><p><b>Equivalent vanilla OpenSearch DSL (run live against vanilla, port 9200, to produce the golden result):</b></p><pre>{
+  &quot;_source&quot;: [
+    &quot;company&quot;
+  ],
+  &quot;query&quot;: {
+    &quot;nested&quot;: {
+      &quot;path&quot;: &quot;regions&quot;,
+      &quot;query&quot;: {
+        &quot;nested&quot;: {
+          &quot;path&quot;: &quot;regions.divisions&quot;,
+          &quot;query&quot;: {
+            &quot;nested&quot;: {
+              &quot;path&quot;: &quot;regions.divisions.departments&quot;,
+              &quot;query&quot;: {
+                &quot;nested&quot;: {
+                  &quot;path&quot;: &quot;regions.divisions.departments.teams&quot;,
+                  &quot;query&quot;: {
+                    &quot;nested&quot;: {
+                      &quot;path&quot;: &quot;regions.divisions.departments.teams.members&quot;,
+                      &quot;query&quot;: {
+                        &quot;nested&quot;: {
+                          &quot;path&quot;: &quot;regions.divisions.departments.teams.members.tasks&quot;,
+                          &quot;query&quot;: {
+                            &quot;nested&quot;: {
+                              &quot;path&quot;: &quot;regions.divisions.departments.teams.members.tasks.tags&quot;,
+                              &quot;query&quot;: {
+                                &quot;exists&quot;: {
+                                  &quot;field&quot;: &quot;regions.divisions.departments.teams.members.tasks.tags.priority&quot;
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}</pre><p><b>Delegation routing observed (mustang, live):</b> <code>NESTED_ANY_MATCH_EXPR &rarr; backends=['datafusion']</code></p><div class="two-col"><div><p><b>Expected (live vanilla result):</b></p><div class="result-box"><code>[&#x27;Acme&#x27;, &#x27;Globex&#x27;, &#x27;Initech&#x27;]</code></div></div><div><p><b>Got (mustang, this branch):</b></p><div class="result-box"><code>[&#x27;Acme&#x27;, &#x27;Globex&#x27;, &#x27;Initech&#x27;]</code></div></div></div></div><div class="case-card pass"><div class="case-title">cross_branch_office_and_division <span class="badge badge-pass">MATCH</span> <span class="badge badge-lucene">lucene-viable</span><span class="badge badge-src">poc_deep7 / live vanilla</span><span class="depth-badge">depth 2 &amp; 3 (independent sub-branches, not a shared prefix)</span></div><div class="kv">cross-branch AND: regions.offices.floor&gt;5 AND regions.divisions.division=Cloud -- two DIFFERENT nested children of the same regions element (offices vs. divisions), not one shared chain</div><p><b>PPL query (run against mustang, port 9000):</b></p><pre>source=poc_deep7 | where regions.offices.floor&gt;5 and regions.divisions.division=&quot;Cloud&quot; | fields company</pre><p><b>Equivalent vanilla OpenSearch DSL (run live against vanilla, port 9200, to produce the golden result):</b></p><pre>{
+  &quot;_source&quot;: [
+    &quot;company&quot;
+  ],
+  &quot;query&quot;: {
+    &quot;nested&quot;: {
+      &quot;path&quot;: &quot;regions&quot;,
+      &quot;query&quot;: {
+        &quot;bool&quot;: {
+          &quot;must&quot;: [
+            {
+              &quot;nested&quot;: {
+                &quot;path&quot;: &quot;regions.offices&quot;,
+                &quot;query&quot;: {
+                  &quot;range&quot;: {
+                    &quot;regions.offices.floor&quot;: {
+                      &quot;gt&quot;: 5
+                    }
+                  }
+                }
+              }
+            },
+            {
+              &quot;nested&quot;: {
+                &quot;path&quot;: &quot;regions.divisions&quot;,
+                &quot;query&quot;: {
+                  &quot;term&quot;: {
+                    &quot;regions.divisions.division&quot;: &quot;Cloud&quot;
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}</pre><p><b>Delegation routing observed (mustang, live):</b> <code>NESTED_ANY_MATCH_EXPR &rarr; backends=['datafusion'], NESTED_ANY_MATCH_CHILD &rarr; backends=['datafusion', 'lucene']</code></p><div class="two-col"><div><p><b>Expected (live vanilla result):</b></p><div class="result-box"><code>[]</code></div></div><div><p><b>Got (mustang, this branch):</b></p><div class="result-box"><code>[]</code></div></div></div></div><h2>What this demonstrates</h2>
+<ul>
+<li>Multi-level descent is verified from depth 2 all the way to depth 7 (the maximum depth in the test
+kit's own dataset) &mdash; <code>ExprTreeBuilder</code>'s chain-descent and the Rust UDF's recursive
+<code>{"nested":...}</code> evaluator are genuinely depth-agnostic, matching vanilla exactly at every
+depth tested.</li>
+<li><b>Lucene delegation now works at every depth for keyword-equality predicates</b> &mdash; both a bare
+single-conjunct equality (e.g. <code>d3_dept_eng</code>, <code>d5_member_alice</code>,
+<code>f6_000</code>, <code>f6_008</code>) via the extended <code>NestedAnyMatchExprSerializer</code>
+(native nested-of-nested <code>NestedQueryBuilder</code> chain), and a compound predicate's equality
+conjunct (e.g. <code>f6_004</code>-<code>f6_007</code>, <code>d7_tag_backend_and_prio_lte2</code>) via
+the child-grain split's <code>NESTED_ANY_MATCH_CHILD</code>, evaluated at CHILD-element grain and
+intersected with the range/other clause at the SAME element before the &exist; roll-up.</li>
+<li>A depth-7 COMPOUND AND (<code>tags.label=backend AND tags.priority&lt;=2</code>) still correlates
+both conjuncts against the SAME innermost element (via <code>mergeSharedNestedPrefixes</code> +
+<code>insertLuceneMarkerAtDepth</code> placing the Lucene marker at the correct recursion depth), AND is
+now Lucene-viable for its equality half &mdash; not an independent-AND that could match different tag
+elements, and not DataFusion-only either.</li>
+<li>A depth-7 <code>EXISTS</code> (<code>IS NOT NULL</code>) and pure-range leaves correctly stay
+DataFusion-only &mdash; Lucene delegation is scoped exactly to keyword-equality shapes, never attempted
+for a comparison Lucene can't natively serve.</li>
+<li>The cross-branch case (<code>regions.offices.floor&gt;5 AND regions.divisions.division=Cloud</code>)
+confirms two *different* nested sub-paths hanging off the same parent element are each evaluated in their
+own independent existential loop, correctly AND-ed at the row level, AND the equality half
+(<code>division=Cloud</code>) is independently Lucene-viable via the child-grain split &mdash; without
+being incorrectly merged with the unrelated <code>offices.floor</code> range clause (they don't share a
+nested prefix, so <code>mergeSharedNestedPrefixes</code> correctly keeps them separate).</li>
+</ul>
+</body></html>

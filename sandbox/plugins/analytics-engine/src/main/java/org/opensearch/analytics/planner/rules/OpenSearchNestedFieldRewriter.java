@@ -488,6 +488,25 @@ public final class OpenSearchNestedFieldRewriter {
      * row's value?).
      */
     private static RexNode tryLambdaRewrite(RexNode condition, int arrayCol, RelDataType inputRowType, RexBuilder rexBuilder) {
+        // A top-level OR mixing an array-referencing operand with a pure-parent operand (e.g.
+        // `comments.author='alice' OR views>50`) used to always fall through to the single-joint-
+        // tree path below, which fails to build (a parent column has no meaning inside a per-
+        // element tree) and forces the Correlate+Uncollect fallback — which then mis-drops parent
+        // rows with an absent/empty array (see BUG note on scenario "OR breaks the classification")
+        // and, at 2+ levels of nesting, crashes outright (the unnest path's intermediate row
+        // carries a raw multi-level Struct that DataFusion's array_element/sum can't handle). Try
+        // the OR-split first; only a pure-array OR (no parent operand at all, e.g. `comments.a=X or
+        // comments.b=Y`) falls through unchanged to the existing single-joint-tree treatment below.
+        if (condition.getKind() == SqlKind.OR) {
+            RexNode orSplit = tryOrSplitRewrite(condition, arrayCol, inputRowType, rexBuilder);
+            if (orSplit != null) {
+                LOGGER.info(
+                    "[NESTED-LAMBDA] top-level OR split: array-side NESTED_ANY_MATCH_EXPR OR'd with pure-parent "
+                        + "operand(s) at the row level (existential quantification distributes over OR — no unnest needed)"
+                );
+                return orSplit;
+            }
+        }
         List<RexNode> conjuncts = condition.getKind() == SqlKind.AND ? ((RexCall) condition).getOperands() : List.of(condition);
 
         ExprTreeBuilder builder = new ExprTreeBuilder(arrayCol, inputRowType);
@@ -536,25 +555,26 @@ public final class OpenSearchNestedFieldRewriter {
             }
 
             // ── CHILD-GRAIN split (opt-in) ──────────────────────────────────────────────────
-            // When enabled, each keyword-equality conjunct that Lucene can evaluate is REPLACED in
-            // the JSON tree by a {"lucene": <clauseIdx>, "fallback": <original subtree>} node and
-            // paired with a NESTED_ANY_MATCH_CHILD peer. The executor evaluates the residual (with
-            // the range/other clauses on the decoded array) and, at the {"lucene"} node, consumes
-            // the Lucene peer's per-element verdict when the child-grain executor actually supplies
-            // it — so keyword (Lucene) and range (DataFusion) intersect at the SAME element before
-            // the ∃ roll-up. When no bits are supplied (the plain UDF path, or a Tree/OR-NOT plan
-            // where the peer was demoted to native), the node evaluates "fallback" natively instead —
-            // so NESTED_ANY_MATCH_EXPR stays correct on EVERY path and Lucene is a pure accelerant,
-            // never a correctness dependency. childPeers[i] pairs with clause index i. Only fires in
-            // the compound (>1) path.
+            // When enabled, each keyword-equality conjunct that Lucene can evaluate — at ANY depth,
+            // single-level or crossing 1+ further nested-array boundaries — is REPLACED in the JSON
+            // tree by a {"lucene": <clauseIdx>, "fallback": <original subtree>} node, placed at the
+            // matching recursion depth (see insertLuceneMarkerAtDepth), and paired with a
+            // NESTED_ANY_MATCH_CHILD peer. The executor evaluates the residual (with the range/other
+            // clauses on the decoded array) and, at the {"lucene"} node, consumes the Lucene peer's
+            // per-element verdict when the child-grain executor actually supplies it — so keyword
+            // (Lucene) and range (DataFusion) intersect at the SAME element before the ∃ roll-up. When
+            // no bits are supplied (the plain UDF path, or a Tree/OR-NOT plan where the peer was
+            // demoted to native), the node evaluates "fallback" natively instead — so
+            // NESTED_ANY_MATCH_EXPR stays correct on EVERY path and Lucene is a pure accelerant, never
+            // a correctness dependency. childPeers[i] pairs with clause index i. Only fires in the
+            // compound (>1) path.
             List<RexNode> childPeers = new ArrayList<>();
             if (arrayConjuncts.size() > 1 && childGrainSplitEnabled()) {
                 for (int i = 0; i < arrayConjuncts.size(); i++) {
-                    RexNode peer = tryDirectEqualityChildRewrite(arrayConjuncts.get(i), arrayCol, inputRowType, rexBuilder, childPeers.size());
+                    ChildPeer peer = tryDirectEqualityChildRewrite(arrayConjuncts.get(i), arrayCol, inputRowType, rexBuilder, childPeers.size());
                     if (peer != null) {
-                        Map<String, Object> luceneNode = Map.of("lucene", childPeers.size(), "fallback", arrayTrees.get(i));
-                        arrayTrees.set(i, luceneNode);
-                        childPeers.add(peer);
+                        arrayTrees.set(i, insertLuceneMarkerAtDepth(arrayTrees.get(i), peer.boundaries(), childPeers.size()));
+                        childPeers.add(peer.call());
                     }
                 }
             }
@@ -621,6 +641,66 @@ public final class OpenSearchNestedFieldRewriter {
         }
 
         return combineWithParentConjuncts(combinedArrayCondition, parentConjuncts, rexBuilder);
+    }
+
+    /**
+     * Splits a top-level {@code OR}'s operands into array-referencing and pure-parent groups,
+     * mirroring {@link #tryLambdaRewrite}'s AND-split — but ORs the two groups back together at
+     * the row level instead of ANDing them, which is valid because existential quantification
+     * distributes over OR: {@code (∃e. P(e)) OR Q  ≡  ∃e. (P(e) OR Q)} for any per-row predicate
+     * {@code Q} that doesn't depend on {@code e}. Concretely, {@code comments.author='alice' OR
+     * views>50} becomes {@code NESTED_ANY_MATCH_EXPR(comments, {author='alice'}) OR (views>50)} —
+     * each side evaluated independently (one existentially over the array, one as a plain row
+     * check), then ORed — instead of forcing {@code views>50} to be expressed as a per-element
+     * field (which it cannot be, since it isn't part of any array element).
+     *
+     * <p>Returns {@code null} (triggering the fall-through to the existing single-joint-tree
+     * path, which itself falls back to Correlate+Uncollect if that also fails) in two cases: no
+     * operand references our array at all (nothing to split — shouldn't normally happen since the
+     * caller already confirmed {@code arrayCol} is referenced somewhere), or EVERY operand
+     * references the array (a pure-array OR like {@code comments.a=X or comments.b=Y} has no
+     * parent-side operand to split off, and must stay a single joint per-element tree so a
+     * DIFFERENT element can't satisfy each side of the OR — same "Delta" false-positive concern
+     * that already motivates fusing AND conjuncts). Each array-referencing operand is itself
+     * fused into ONE joint tree via {@link ExprTreeBuilder#build} (an OR of multiple array
+     * operands, e.g. {@code comments.a=X or comments.b=Y or views>50}, still needs joint-element
+     * semantics across the array operands — only the parent operand(s) split cleanly away).
+     */
+    private static RexNode tryOrSplitRewrite(RexNode condition, int arrayCol, RelDataType inputRowType, RexBuilder rexBuilder) {
+        List<RexNode> operands = ((RexCall) condition).getOperands();
+        ExprTreeBuilder builder = new ExprTreeBuilder(arrayCol, inputRowType);
+        List<RexNode> arrayOperands = new ArrayList<>();
+        List<RexNode> parentOperands = new ArrayList<>();
+        for (RexNode operand : operands) {
+            if (builder.containsItemOnArray(operand)) {
+                arrayOperands.add(operand);
+            } else {
+                parentOperands.add(operand);
+            }
+        }
+        if (arrayOperands.isEmpty() || parentOperands.isEmpty()) {
+            return null; // nothing to split (all-parent can't happen here; all-array needs the joint-tree path)
+        }
+
+        List<Map<String, Object>> arrayTrees = new ArrayList<>();
+        for (RexNode operand : arrayOperands) {
+            Map<String, Object> tree = builder.build(operand);
+            if (tree == null) {
+                return null; // unsupported shape — fall back to the joint-tree path (then unnest if that also fails)
+            }
+            arrayTrees.add(tree);
+        }
+        arrayTrees = mergeSharedNestedPrefixes(arrayTrees);
+        Map<String, Object> combinedArrayTree = arrayTrees.size() == 1 ? arrayTrees.get(0) : Map.of("op", "OR", "args", arrayTrees);
+        RexNode anyMatchCall = buildAnyMatchExprCall(combinedArrayTree, arrayCol, inputRowType, rexBuilder);
+        if (anyMatchCall == null) {
+            return null; // serialization failed — fall back
+        }
+
+        List<RexNode> allOperands = new ArrayList<>(parentOperands.size() + 1);
+        allOperands.add(anyMatchCall);
+        allOperands.addAll(parentOperands);
+        return rexBuilder.makeCall(rexBuilder.getTypeFactory().createSqlType(SqlTypeName.BOOLEAN), org.apache.calcite.sql.fun.SqlStdOperatorTable.OR, allOperands);
     }
 
     /**
@@ -741,14 +821,35 @@ public final class OpenSearchNestedFieldRewriter {
     }
 
     /**
-     * CHILD-GRAIN sibling of {@link #tryDirectEqualityRewrite} for the opt-in child-grain split: for a
-     * keyword-equality conjunct {@code ITEM($arrayCol,'field') = 'value'}, emits
-     * {@code NESTED_ANY_MATCH_CHILD(arrayRef, 'field', 'EQUALS', 'value', clauseIdx)} — the child-scoped
-     * Lucene peer paired with the {@code {"lucene": clauseIdx}} node in the residual JSON. Returns
-     * {@code null} for any non-(keyword-equality) shape, so the caller leaves that conjunct in the JSON tree
-     * for DataFusion. Same operand parse as the parent-grain variant plus the trailing {@code clauseIdx}.
+     * Result of {@link #tryDirectEqualityChildRewrite}: the {@code NESTED_ANY_MATCH_CHILD} peer call,
+     * plus how many nested-array boundaries the matched chain crossed (0 for the pre-existing
+     * single-level shape) — the caller needs {@code boundaries} to place the paired {@code {"lucene"}}
+     * marker at the correct depth in the residual JSON tree (see {@link #insertLuceneMarkerAtDepth}).
      */
-    private static RexNode tryDirectEqualityChildRewrite(
+    private record ChildPeer(RexNode call, int boundaries) {}
+
+    /**
+     * CHILD-GRAIN sibling of {@link #tryDirectEqualityRewrite} for the opt-in child-grain split: for a
+     * keyword-equality conjunct whose array-side operand is either a single-hop
+     * {@code ITEM($arrayCol,'field')} OR a multi-hop chain crossing 1+ further nested-array boundaries
+     * (e.g. {@code products.variants.color = 'red'}), emits {@code NESTED_ANY_MATCH_CHILD(arrayRef,
+     * 'field'|'hop1.hop2...leaf', 'EQUALS', 'value', clauseIdx)} — the child-scoped Lucene peer paired
+     * with a {@code {"lucene": clauseIdx}} node in the residual JSON, placed at the matching depth by
+     * the caller. Returns {@code null} for any non-(keyword-equality) shape, so the caller leaves that
+     * conjunct in the JSON tree for DataFusion.
+     *
+     * <p>The field-name argument encodes the FULL nested-path chain crossed, dot-joined (e.g.
+     * {@code "variants.color"} for a 1-boundary chain, or plain {@code "author"} for the pre-existing
+     * single-level shape — unchanged wire format for that case) — {@code NestedAnyMatchChildSerializer}
+     * splits it back apart to compute the deepest crossed level's own {@code _nested_path} (see that
+     * class's javadoc for why targeting the wrong level silently returns zero matches rather than
+     * erroring). Mirrors {@link ExprTreeBuilder#tryBuildComparisonWithDescent}'s existing
+     * hops-to-leaf-field simplification exactly (the final hop is always the leaf field name, even if
+     * {@code boundaries < hops.size()-1} because an intermediate hop is a flattened {@code object} —
+     * not a {@code nested} array — field; that gap is pre-existing and shared with the correctness
+     * path, not introduced here).
+     */
+    private static ChildPeer tryDirectEqualityChildRewrite(
         RexNode conjunct,
         int arrayCol,
         RelDataType inputRowType,
@@ -760,13 +861,12 @@ public final class OpenSearchNestedFieldRewriter {
         }
         RexNode left = call.getOperands().get(0);
         RexNode right = call.getOperands().get(1);
-        RexCall itemCall;
+        ExprTreeBuilder builder = new ExprTreeBuilder(arrayCol, inputRowType);
+        List<String> hops;
         RexLiteral valueLit;
-        if (isItemOnArray(left, arrayCol) && right instanceof RexLiteral lit) {
-            itemCall = (RexCall) left;
+        if ((hops = builder.chainHops(left)) != null && right instanceof RexLiteral lit) {
             valueLit = lit;
-        } else if (isItemOnArray(right, arrayCol) && left instanceof RexLiteral lit) {
-            itemCall = (RexCall) right;
+        } else if ((hops = builder.chainHops(right)) != null && left instanceof RexLiteral lit) {
             valueLit = lit;
         } else {
             return null;
@@ -774,19 +874,17 @@ public final class OpenSearchNestedFieldRewriter {
         if (valueLit.getTypeName() != SqlTypeName.CHAR && valueLit.getTypeName() != SqlTypeName.VARCHAR) {
             return null;
         }
-        RexNode fieldNameNode = itemCall.getOperands().get(1);
-        if (!(fieldNameNode instanceof RexLiteral fieldLit) || fieldLit.getTypeName() != SqlTypeName.CHAR) {
-            return null;
-        }
-        String fieldName = fieldLit.getValueAs(String.class);
+        int boundaries = builder.countNestedBoundaries(hops);
+        String leafField = hops.get(hops.size() - 1);
+        String encodedFieldName = boundaries == 0 ? leafField : String.join(".", hops.subList(0, boundaries)) + "." + leafField;
         String value = valueLit.getValueAs(String.class);
         RexNode arrayRef = rexBuilder.makeInputRef(inputRowType.getFieldList().get(arrayCol).getType(), arrayCol);
-        return rexBuilder.makeCall(
+        RexNode call2 = rexBuilder.makeCall(
             rexBuilder.getTypeFactory().createSqlType(SqlTypeName.BOOLEAN),
             NESTED_ANY_MATCH_CHILD_OP,
             List.of(
                 arrayRef,
-                rexBuilder.makeLiteral(fieldName),
+                rexBuilder.makeLiteral(encodedFieldName),
                 rexBuilder.makeLiteral("EQUALS"),
                 rexBuilder.makeLiteral(value),
                 // clauseIdx as a STRING literal, not INTEGER: substrait/isthmus requires all operands at a
@@ -797,6 +895,32 @@ public final class OpenSearchNestedFieldRewriter {
                 rexBuilder.makeLiteral(Integer.toString(clauseIdx))
             )
         );
+        return new ChildPeer(call2, boundaries);
+    }
+
+    /**
+     * Descends {@code boundaries} levels of {@code {"nested":X,"inner":Y}} wrappers into {@code tree}
+     * and replaces the innermost, non-{@code "nested"} subtree with
+     * {@code {"lucene":clauseIdx,"fallback":<that subtree>}} — used so a multi-level child-grain peer's
+     * marker sits at the recursion depth matching its own coordinate space (the Rust UDF's descent
+     * consults {@code lucene} bits at whatever depth the marker is found, see
+     * {@code nested_any_match_expr.rs}'s {@code eval_bool}), and so every {@code "nested"} key ABOVE
+     * the leaf survives untouched — required for {@link #mergeSharedNestedPrefixes} to still find and
+     * merge two conjuncts sharing that prefix even when one has been replaced by this marker. For
+     * {@code boundaries == 0} (the pre-existing single-level shape) this reduces to wrapping the whole
+     * tree directly, unchanged from before. Returns a new tree; does not mutate {@code tree}.
+     */
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> insertLuceneMarkerAtDepth(Map<String, Object> tree, int boundaries, int clauseIdx) {
+        if (boundaries <= 0 || !(tree.get("nested") instanceof String nestedName)) {
+            return Map.of("lucene", clauseIdx, "fallback", tree);
+        }
+        Map<String, Object> inner = (Map<String, Object>) tree.get("inner");
+        Map<String, Object> newInner = insertLuceneMarkerAtDepth(inner, boundaries - 1, clauseIdx);
+        Map<String, Object> newWrapper = new LinkedHashMap<>();
+        newWrapper.put("nested", nestedName);
+        newWrapper.put("inner", newInner);
+        return newWrapper;
     }
 
     /** True if {@code node} is exactly {@code ITEM($arrayCol, <anything>)}. */

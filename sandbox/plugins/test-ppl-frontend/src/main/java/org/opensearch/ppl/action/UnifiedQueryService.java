@@ -120,6 +120,9 @@ public class UnifiedQueryService {
             // Log what the context's root schema looks like
             logger.info("[UnifiedQueryService] Context built, planning PPL: {}", pplText);
             UnifiedQueryPlanner planner = new UnifiedQueryPlanner(context);
+            // [DEBUG-LOGICALPLAN] INPUT to planner.plan(...) — the raw PPL text handed to the
+            // sql-plugin, before any AST parsing / QualifiedNameResolver walk / RelNode building.
+            logger.info("[DEBUG-LOGICALPLAN] INPUT pplText:\n{}", pplText);
 
             // [NESTED] Nested-field queries are planned normally: PPL `expand <array>` lowers to a
             // Calcite Correlate+Uncollect that OpenSearchNestedFieldRewriter marks and isthmus emits as
@@ -154,6 +157,13 @@ public class UnifiedQueryService {
             if (logger.isDebugEnabled()) {
                 logger.debug("[NESTED] logical plan for PPL [{}]:\n{}", pplText, org.apache.calcite.plan.RelOptUtil.toString(logicalPlan));
             }
+            // [DEBUG-LOGICALPLAN] OUTPUT of planner.plan(...) — the fully-typed RelNode tree the
+            // sql-plugin handed back (this is what gets passed to PlannerImpl.createPlan next).
+            logger.info(
+                "[DEBUG-LOGICALPLAN] OUTPUT logicalPlan for pplText [{}]:\n{}",
+                pplText,
+                org.apache.calcite.plan.RelOptUtil.toString(logicalPlan)
+            );
 
             // Extract column names from the RelNode's row type.
             List<RelDataTypeField> fields = logicalPlan.getRowType().getFieldList();

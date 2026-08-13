@@ -30,16 +30,22 @@ import java.util.List;
  * <p>The JSON tree can describe ANY per-element predicate (compound, arithmetic, ...), but this
  * serializer — and native Lucene queries in general — can only translate a single leaf equality
  * ({@code {"op":"=","args":[{"field":F},{"lit":V}]}}, either operand order, {@code V} a string) into
- * a {@link TermQueryBuilder}. {@link #canServe} inspects the tree and approves only that shape;
+ * a {@link TermQueryBuilder}. That leaf may itself sit inside 1+ {@code {"nested":hop,"inner":...}}
+ * wrappers — the shape a MULTI-LEVEL single-conjunct dotted path (e.g.
+ * {@code products.variants.color = "red"}, with no other conjunct on the array to trigger the
+ * separate child-grain-split path) produces. {@link #canServe} inspects the tree and approves only
+ * an equality leaf at the root OR at the bottom of a chain of {@code "nested"} wrappers;
  * {@code OpenSearchFilterRule} calls it before ever reaching {@link #buildQueryBuilder}, so this
  * method can assume the shape it recognizes.
  *
  * <p>Builds vanilla OpenSearch's own native nested-query primitive: a {@link TermQueryBuilder} on
- * the dotted leaf field ({@code <arrayCol>.<field>}), wrapped in a {@link NestedQueryBuilder}
- * (Lucene executes this as a {@code ToParentBlockJoinQuery}, matching parent docs with ANY child
- * having that field equal to the value — the same semantics the per-element JSON-tree evaluation
- * produces natively in DataFusion for this single-leaf shape). {@code ScoreMode.None}: this
- * predicate is used purely for filtering, never scoring.
+ * the dotted leaf field ({@code <arrayCol>.<hop1>...<hopN>.<field>}), wrapped in one
+ * {@link NestedQueryBuilder} per level crossed — innermost first, e.g. for a 1-boundary chain,
+ * {@code NestedQueryBuilder("products", NestedQueryBuilder("products.variants", term(...)))} —
+ * matching vanilla's own construction for a multi-level {@code nested} query (each level's path is
+ * the FULL dotted path up to and including that level, per OpenSearch's {@code nested} query
+ * contract). {@code ScoreMode.None} throughout: this predicate is used purely for filtering, never
+ * scoring.
  */
 public class NestedAnyMatchExprSerializer extends AbstractQuerySerializer {
 
@@ -61,18 +67,36 @@ public class NestedAnyMatchExprSerializer extends AbstractQuerySerializer {
             throw new IllegalArgumentException("NESTED_ANY_MATCH_EXPR's 1st operand must be the array column, got " + operands.get(0));
         }
         FieldStorageInfo arrayField = FieldStorageInfo.resolve(fieldStorage, arrayColRef.getIndex());
-        String nestedPath = arrayField.getFieldName();
-        String leafField = nestedPath + "." + leaf.field();
+        String arrayColPath = arrayField.getFieldName();
 
-        QueryBuilder child = new TermQueryBuilder(leafField, leaf.value());
-        return new NestedQueryBuilder(nestedPath, child, ScoreMode.None);
+        // Build the full dotted leaf field path, and the list of nested-query paths to wrap, OUTERMOST
+        // first: [arrayColPath, arrayColPath.hop1, arrayColPath.hop1.hop2, ...] — one NestedQueryBuilder
+        // per level, each path the FULL dotted path up to that level (OpenSearch's own nested-query
+        // contract for multi-level nesting).
+        StringBuilder pathBuilder = new StringBuilder(arrayColPath);
+        List<String> nestedPaths = new java.util.ArrayList<>();
+        nestedPaths.add(pathBuilder.toString());
+        for (String hop : leaf.hops()) {
+            pathBuilder.append('.').append(hop);
+            nestedPaths.add(pathBuilder.toString());
+        }
+        String leafField = pathBuilder + "." + leaf.field();
+
+        QueryBuilder inner = new TermQueryBuilder(leafField, leaf.value());
+        for (int i = nestedPaths.size() - 1; i >= 0; i--) {
+            inner = new NestedQueryBuilder(nestedPaths.get(i), inner, ScoreMode.None);
+        }
+        return inner;
     }
 
-    private record EqualityLeaf(String field, String value) {}
+    /** {@code hops} is the ordered list of intermediate nested-array field names crossed BELOW the
+     *  array column, before reaching {@code field} — empty for the pre-existing single-level shape. */
+    private record EqualityLeaf(List<String> hops, String field, String value) {}
 
     /**
-     * Returns the single equality leaf this call's JSON tree describes, or {@code null} if the
-     * tree is anything else (compound, arithmetic, non-string value, malformed, ...).
+     * Returns the single equality leaf this call's JSON tree describes — possibly nested inside 1+
+     * {@code {"nested":hop,"inner":...}} wrappers — or {@code null} if the tree is anything else
+     * (compound, arithmetic, non-string value, malformed, ...).
      */
     private static EqualityLeaf parseEqualityLeaf(RexCall call) {
         List<RexNode> operands = call.getOperands();
@@ -89,18 +113,41 @@ public class NestedAnyMatchExprSerializer extends AbstractQuerySerializer {
         } catch (Exception e) {
             return null;
         }
-        if (!root.isObject() || !"=".equals(root.path("op").asText(null))) {
+        return parseEqualityLeaf(root, new java.util.ArrayList<>());
+    }
+
+    /** Recursive helper: descends through {@code "nested"} wrappers, accumulating hop names, until it
+     *  finds an equality leaf or hits a shape it doesn't recognize. */
+    private static EqualityLeaf parseEqualityLeaf(JsonNode node, List<String> hopsSoFar) {
+        if (!node.isObject()) {
             return null;
         }
-        JsonNode args = root.get("args");
+        if (node.has("nested") && node.has("inner")) {
+            JsonNode nestedField = node.get("nested");
+            if (!nestedField.isTextual()) {
+                return null;
+            }
+            List<String> hops = new java.util.ArrayList<>(hopsSoFar);
+            hops.add(nestedField.asText());
+            return parseEqualityLeaf(node.get("inner"), hops);
+        }
+        if (!"=".equals(node.path("op").asText(null))) {
+            return null;
+        }
+        JsonNode args = node.get("args");
         if (args == null || !args.isArray() || args.size() != 2) {
             return null;
         }
-        EqualityLeaf leaf = fieldAndLiteral(args.get(0), args.get(1));
-        return leaf != null ? leaf : fieldAndLiteral(args.get(1), args.get(0));
+        FieldAndValue fv = fieldAndLiteral(args.get(0), args.get(1));
+        if (fv == null) {
+            fv = fieldAndLiteral(args.get(1), args.get(0));
+        }
+        return fv == null ? null : new EqualityLeaf(hopsSoFar, fv.field(), fv.value());
     }
 
-    private static EqualityLeaf fieldAndLiteral(JsonNode maybeField, JsonNode maybeLiteral) {
+    private record FieldAndValue(String field, String value) {}
+
+    private static FieldAndValue fieldAndLiteral(JsonNode maybeField, JsonNode maybeLiteral) {
         if (!maybeField.isObject() || !maybeField.has("field") || !maybeLiteral.isObject() || !maybeLiteral.has("lit")) {
             return null;
         }
@@ -109,6 +156,6 @@ public class NestedAnyMatchExprSerializer extends AbstractQuerySerializer {
         if (!fieldNode.isTextual() || !litNode.isTextual()) {
             return null;
         }
-        return new EqualityLeaf(fieldNode.asText(), litNode.asText());
+        return new FieldAndValue(fieldNode.asText(), litNode.asText());
     }
 }

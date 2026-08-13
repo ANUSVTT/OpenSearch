@@ -1,0 +1,899 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<title>Complete Minimal Query Set (Analytics/PPL) -- MULTI-LEVEL NESTING -- mustang-nested-testkit Results</title>
+<style>
+:root { color-scheme: light dark; }
+body { font-family: -apple-system, "Segoe UI", Helvetica, sans-serif; margin: 20px; line-height: 1.5; font-size: 13px; }
+h1 { font-size: 18px; } h2 { font-size: 15px; margin-top: 28px; } h3 { font-size: 14px; margin-top: 22px; color: #333; }
+@media (prefers-color-scheme: dark) { h3 { color: #ccc; } }
+table { border-collapse: collapse; margin: 10px 0 20px; width: 100%; }
+th, td { border: 1px solid #8884; padding: 5px 9px; font-size: 12px; text-align: left; vertical-align: top; }
+th { background: #f3f3f3; position: sticky; top: 0; }
+@media (prefers-color-scheme: dark) { th { background: #2a2a2a; } pre { background: #1a1a1a; } }
+code { font-family: ui-monospace, Menlo, monospace; font-size: 11px; }
+pre { font-family: ui-monospace, Menlo, monospace; font-size: 11px; background: #f5f5f5; padding: 10px; border-radius: 4px; overflow-x: auto; margin: 6px 0; white-space: pre-wrap; word-wrap: break-word; }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; }
+.badge-pass { background: #4caf50; color: white; }
+.badge-fail { background: #f44336; color: white; }
+.badge-sec { background: #6a4bc6; color: white; }
+.badge-idx { background: #0277bd; color: white; }
+details { margin: 4px 0; }
+details summary { cursor: pointer; font-weight: bold; font-size: 12px; padding: 2px 0; }
+details pre { margin-top: 6px; }
+.section-header { background: #e3edf7; padding: 8px 12px; border-radius: 6px; margin-top: 20px; margin-bottom: 8px; }
+@media (prefers-color-scheme: dark) { .section-header { background: #1c2c3c; } }
+.note-box { background: #fff3e0; border-left: 4px solid #ff9800; padding: 10px 14px; border-radius: 4px; margin: 12px 0; }
+@media (prefers-color-scheme: dark) { .note-box { background: #3a2a10; } }
+.case-card { border: 1px solid #8884; border-radius: 6px; margin: 14px 0; padding: 12px 14px; }
+.case-card.pass { border-left: 4px solid #4caf50; }
+.case-card.fail { border-left: 4px solid #f44336; }
+.case-title { font-weight: bold; font-size: 13px; }
+.two-col { display: flex; gap: 16px; flex-wrap: wrap; }
+.two-col > div { flex: 1; min-width: 260px; }
+.result-box { padding: 6px 10px; border-radius: 4px; background: #f5f5f5; }
+@media (prefers-color-scheme: dark) { .result-box { background: #1a1a1a; } }
+.toc { background: #f0f0f0; padding: 10px 16px; border-radius: 6px; }
+@media (prefers-color-scheme: dark) { .toc { background: #222; } }
+.index-block { border: 1px solid #8884; border-radius: 6px; margin: 14px 0; padding: 12px 14px; }
+.doc-entry { margin-bottom: 8px; padding: 8px; background: #fafafa; border-radius: 4px; border-left: 3px solid #ddd; }
+@media (prefers-color-scheme: dark) { .doc-entry { background: #1e1e1e; border-left-color: #444; } }
+</style></head><body>
+<h1>Complete Minimal Query Set (Analytics/PPL) &mdash; MULTI-LEVEL NESTING &mdash; mustang-nested-testkit Results</h1>
+<p><b>Branch:</b> <code>shreanu/nested-poc-search-rewrite</code><br>
+<b>Scope:</b> the same finalized 23-scenario minimal set as the single-level report, but every
+single-level nested scenario is re-run against a NEW dataset (<code>cmts_deep</code>) where the
+nested field sits one level deeper (<code>comments.replies.author</code> /
+<code>comments.replies.score</code> instead of <code>comments.author</code> /
+<code>comments.score</code>) -- same 8 documents and values, one extra nesting hop. Scenarios
+already multi-level in the original report (6, 8, 16, 17 on <code>c3</code>; 18/18a on
+<code>ambig</code>) are unchanged.</p>
+<div class="toc"><b>Summary: 23/23 passed.</b> The one non-matching case (#10) is a
+documented correctness gap that is STRICTLY WORSE at multi-level depth than at single-level
+(a hard crash instead of a silently wrong result) -- see its note-box below.</p>
+</div>
+<h2>Indices &amp; Data</h2>
+<p>Every index used by the scenarios below, its field mapping (dotted paths, flattened), and its
+documents verbatim.</p>
+
+<div class="index-block">
+  <h3><code>cmts_deep</code> <span class="badge badge-idx">8 docs</span></h3>
+  <p>Multi-level mirror of the single-level report&#x27;s cmts -- comments is nested, and author/score are pushed one level deeper into a replies nested array (comments.replies.author / comments.replies.score). Same 8 documents and values as cmts, just one extra nesting hop.</p>
+  <p><b>Mapping (flattened, dotted paths):</b></p>
+  <table><thead><tr><th>Field path</th><th>Type</th></tr></thead><tbody><tr><td><code>title</code></td><td><code>keyword</code></td></tr><tr><td><code>views</code></td><td><code>integer</code></td></tr><tr><td><code>comments</code></td><td><code>nested</code></td></tr><tr><td><code>comments.replies</code></td><td><code>nested</code></td></tr><tr><td><code>comments.replies.author</code></td><td><code>keyword</code></td></tr><tr><td><code>comments.replies.score</code></td><td><code>integer</code></td></tr></tbody></table>
+  <details><summary>Documents (8)</summary><div class="doc-entry"><pre>{
+  &quot;title&quot;: &quot;P1&quot;,
+  &quot;views&quot;: 60,
+  &quot;comments&quot;: [
+    {
+      &quot;replies&quot;: [
+        {
+          &quot;author&quot;: &quot;alice&quot;,
+          &quot;score&quot;: 5
+        }
+      ]
+    },
+    {
+      &quot;replies&quot;: [
+        {
+          &quot;author&quot;: &quot;bob&quot;,
+          &quot;score&quot;: 90
+        }
+      ]
+    }
+  ]
+}</pre></div><div class="doc-entry"><pre>{
+  &quot;title&quot;: &quot;P2&quot;,
+  &quot;views&quot;: 30,
+  &quot;comments&quot;: [
+    {
+      &quot;replies&quot;: [
+        {
+          &quot;author&quot;: &quot;alice&quot;,
+          &quot;score&quot;: 99
+        }
+      ]
+    }
+  ]
+}</pre></div><div class="doc-entry"><pre>{
+  &quot;title&quot;: &quot;P3&quot;,
+  &quot;views&quot;: 70,
+  &quot;comments&quot;: [
+    {
+      &quot;replies&quot;: [
+        {
+          &quot;author&quot;: &quot;bob&quot;,
+          &quot;score&quot;: 10
+        }
+      ]
+    },
+    {
+      &quot;replies&quot;: [
+        {
+          &quot;author&quot;: &quot;carol&quot;,
+          &quot;score&quot;: 20
+        }
+      ]
+    }
+  ]
+}</pre></div><div class="doc-entry"><pre>{
+  &quot;title&quot;: &quot;P4&quot;,
+  &quot;views&quot;: 10,
+  &quot;comments&quot;: []
+}</pre></div><div class="doc-entry"><pre>{
+  &quot;title&quot;: &quot;P5&quot;,
+  &quot;views&quot;: 90
+}</pre></div><div class="doc-entry"><pre>{
+  &quot;title&quot;: &quot;P6&quot;,
+  &quot;views&quot;: 45,
+  &quot;comments&quot;: [
+    {
+      &quot;replies&quot;: [
+        {
+          &quot;author&quot;: &quot;alice&quot;,
+          &quot;score&quot;: 5
+        }
+      ]
+    }
+  ]
+}</pre></div><div class="doc-entry"><pre>{
+  &quot;title&quot;: &quot;P7&quot;,
+  &quot;views&quot;: 55,
+  &quot;comments&quot;: [
+    {
+      &quot;replies&quot;: [
+        {
+          &quot;author&quot;: &quot;bob&quot;,
+          &quot;score&quot;: 90
+        }
+      ]
+    }
+  ]
+}</pre></div><div class="doc-entry"><pre>{
+  &quot;title&quot;: &quot;P8&quot;,
+  &quot;views&quot;: 80,
+  &quot;comments&quot;: [
+    {
+      &quot;replies&quot;: [
+        {
+          &quot;author&quot;: &quot;alice&quot;,
+          &quot;score&quot;: 5
+        }
+      ]
+    },
+    {
+      &quot;replies&quot;: [
+        {
+          &quot;author&quot;: &quot;alice&quot;,
+          &quot;score&quot;: 90
+        }
+      ]
+    }
+  ]
+}</pre></div></details>
+</div>
+
+
+<div class="index-block">
+  <h3><code>c3</code> <span class="badge badge-idx">7 docs</span></h3>
+  <p>3-level nested corpus dataset (products -&gt; variants -&gt; specs), unchanged from the single-level report -- already exercises multi-level nesting.</p>
+  <p><b>Mapping (flattened, dotted paths):</b></p>
+  <table><thead><tr><th>Field path</th><th>Type</th></tr></thead><tbody><tr><td><code>title</code></td><td><code>keyword</code></td></tr><tr><td><code>products</code></td><td><code>nested</code></td></tr><tr><td><code>products.pname</code></td><td><code>keyword</code></td></tr><tr><td><code>products.variants</code></td><td><code>nested</code></td></tr><tr><td><code>products.variants.color</code></td><td><code>keyword</code></td></tr><tr><td><code>products.variants.price</code></td><td><code>integer</code></td></tr><tr><td><code>products.variants.specs</code></td><td><code>nested</code></td></tr><tr><td><code>products.variants.specs.key</code></td><td><code>keyword</code></td></tr><tr><td><code>products.variants.specs.val</code></td><td><code>integer</code></td></tr></tbody></table>
+  <details><summary>Documents (7)</summary><div class="doc-entry"><pre>{
+  &quot;title&quot;: &quot;C1&quot;,
+  &quot;products&quot;: [
+    {
+      &quot;pname&quot;: &quot;Widget&quot;,
+      &quot;variants&quot;: [
+        {
+          &quot;color&quot;: &quot;red&quot;,
+          &quot;price&quot;: 200,
+          &quot;specs&quot;: [
+            {
+              &quot;key&quot;: &quot;weight&quot;,
+              &quot;val&quot;: 2
+            },
+            {
+              &quot;key&quot;: &quot;size&quot;,
+              &quot;val&quot;: 10
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}</pre></div><div class="doc-entry"><pre>{
+  &quot;title&quot;: &quot;C2&quot;,
+  &quot;products&quot;: [
+    {
+      &quot;pname&quot;: &quot;Sprocket&quot;,
+      &quot;variants&quot;: [
+        {
+          &quot;color&quot;: &quot;red&quot;,
+          &quot;price&quot;: 50,
+          &quot;specs&quot;: [
+            {
+              &quot;key&quot;: &quot;weight&quot;,
+              &quot;val&quot;: 2
+            },
+            {
+              &quot;key&quot;: &quot;size&quot;,
+              &quot;val&quot;: 10
+            }
+          ]
+        },
+        {
+          &quot;color&quot;: &quot;green&quot;,
+          &quot;price&quot;: 200,
+          &quot;specs&quot;: []
+        }
+      ]
+    }
+  ]
+}</pre></div><div class="doc-entry"><pre>{
+  &quot;title&quot;: &quot;C3&quot;,
+  &quot;products&quot;: []
+}</pre></div><div class="doc-entry"><pre>{
+  &quot;title&quot;: &quot;C4&quot;,
+  &quot;products&quot;: []
+}</pre></div><div class="doc-entry"><pre>{
+  &quot;title&quot;: &quot;C5&quot;,
+  &quot;products&quot;: [
+    {
+      &quot;pname&quot;: &quot;Thingamajig&quot;,
+      &quot;variants&quot;: [
+        {
+          &quot;color&quot;: &quot;red&quot;,
+          &quot;price&quot;: 100,
+          &quot;specs&quot;: []
+        }
+      ]
+    }
+  ]
+}</pre></div><div class="doc-entry"><pre>{
+  &quot;title&quot;: &quot;C6&quot;,
+  &quot;products&quot;: [
+    {
+      &quot;pname&quot;: &quot;Gadget&quot;,
+      &quot;variants&quot;: [
+        {
+          &quot;color&quot;: &quot;blue&quot;,
+          &quot;price&quot;: 100,
+          &quot;specs&quot;: [
+            {
+              &quot;key&quot;: &quot;weight&quot;,
+              &quot;val&quot;: 99
+            }
+          ]
+        },
+        {
+          &quot;color&quot;: &quot;red&quot;,
+          &quot;price&quot;: 100,
+          &quot;specs&quot;: [
+            {
+              &quot;key&quot;: &quot;weight&quot;,
+              &quot;val&quot;: 2
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}</pre></div><div class="doc-entry"><pre>{
+  &quot;title&quot;: &quot;C7&quot;,
+  &quot;products&quot;: [
+    {
+      &quot;pname&quot;: &quot;Doohickey&quot;,
+      &quot;variants&quot;: [
+        {
+          &quot;color&quot;: &quot;red&quot;,
+          &quot;price&quot;: 120,
+          &quot;specs&quot;: [
+            {
+              &quot;key&quot;: &quot;weight&quot;,
+              &quot;val&quot;: 60
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}</pre></div></details>
+</div>
+
+
+<div class="index-block">
+  <h3><code>ambig</code> <span class="badge badge-idx">3 docs</span></h3>
+  <p>Sports-league domain testing the ambiguous-nested-name scenario: leaf field &quot;name&quot; appears at two depths under the same ancestor region.team -- directly (region.team.name, a team&#x27;s own name) and one level deeper (region.team.player.name, a player&#x27;s name).</p>
+  <p><b>Mapping (flattened, dotted paths):</b></p>
+  <table><thead><tr><th>Field path</th><th>Type</th></tr></thead><tbody><tr><td><code>title</code></td><td><code>keyword</code></td></tr><tr><td><code>region</code></td><td><code>nested</code></td></tr><tr><td><code>region.team</code></td><td><code>nested</code></td></tr><tr><td><code>region.team.name</code></td><td><code>keyword</code></td></tr><tr><td><code>region.team.player</code></td><td><code>nested</code></td></tr><tr><td><code>region.team.player.name</code></td><td><code>keyword</code></td></tr></tbody></table>
+  <details><summary>Documents (3)</summary><div class="doc-entry"><pre>{
+  &quot;title&quot;: &quot;Acme Sports Network&quot;,
+  &quot;region&quot;: [
+    {
+      &quot;team&quot;: [
+        {
+          &quot;name&quot;: &quot;Tigers&quot;,
+          &quot;player&quot;: [
+            {
+              &quot;name&quot;: &quot;Eagle&quot;
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}</pre></div><div class="doc-entry"><pre>{
+  &quot;title&quot;: &quot;Metro Sports Group&quot;,
+  &quot;region&quot;: [
+    {
+      &quot;team&quot;: [
+        {
+          &quot;name&quot;: &quot;Eagle&quot;,
+          &quot;player&quot;: [
+            {
+              &quot;name&quot;: &quot;Tigers&quot;
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}</pre></div><div class="doc-entry"><pre>{
+  &quot;title&quot;: &quot;Neutral Sports Co&quot;,
+  &quot;region&quot;: [
+    {
+      &quot;team&quot;: [
+        {
+          &quot;name&quot;: &quot;Sharks&quot;,
+          &quot;player&quot;: [
+            {
+              &quot;name&quot;: &quot;Ray&quot;
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}</pre></div></details>
+</div>
+
+
+<div class="section-header"><h2>(A) FLAT field predicate <span class="badge badge-sec">6/6</span></h2></div>
+
+<div class="case-card pass">
+  <div class="case-title">#1 <span class="badge badge-pass">MATCH</span></div>
+  <p><b>PPL query:</b></p><pre>source=cmts_deep | where title = &quot;P1&quot;</pre>
+  
+  <div class="two-col">
+    <div><p><b>Expected (title):</b></p><div class="result-box"><code>[&quot;P1&quot;]</code></div></div>
+    <div><p><b>Got (title, extracted from full row response):</b></p><div class="result-box"><code>[&quot;P1&quot;]</code></div></div>
+  </div>
+  <details><summary>Got -- full row response (all columns)</summary><pre>[[[{&quot;replies&quot;: [{&quot;author&quot;: &quot;alice&quot;, &quot;score&quot;: 5}]}, {&quot;replies&quot;: [{&quot;author&quot;: &quot;bob&quot;, &quot;score&quot;: 90}]}], &quot;P1&quot;, 60]]</pre></details>
+  <details><summary>RelNode (raw, pre-rewrite)</summary><pre>LogicalFilter(condition=[=($1, &#x27;P1&#x27;)])
+  LogicalTableScan(table=[[opensearch, cmts_deep]])</pre></details>
+  <details><summary>RelNode (rewritten, post nested-field-rewrite)</summary><pre>LogicalFilter(condition=[=($1, &#x27;P1&#x27;)])
+  LogicalTableScan(table=[[opensearch, cmts_deep]])</pre></details>
+  <details><summary>Logical plan (final, annotated with backend routing)</summary><pre>OpenSearchFilter(condition=[ANNOTATED_PREDICATE(id=0, backends=[lucene, datafusion], =($1, &#x27;P1&#x27;))], viableBackends=[[lucene, datafusion]])
+  OpenSearchTableScan(table=[[cmts_deep]], viableBackends=[[lucene, datafusion]])</pre></details>
+  
+</div>
+
+
+<div class="case-card pass">
+  <div class="case-title">#2 <span class="badge badge-pass">MATCH</span></div>
+  <p><b>PPL query:</b></p><pre>source=cmts_deep | where views &gt; 50</pre>
+  
+  <div class="two-col">
+    <div><p><b>Expected (title):</b></p><div class="result-box"><code>[&quot;P1&quot;, &quot;P3&quot;, &quot;P5&quot;, &quot;P7&quot;, &quot;P8&quot;]</code></div></div>
+    <div><p><b>Got (title, extracted from full row response):</b></p><div class="result-box"><code>[&quot;P1&quot;, &quot;P3&quot;, &quot;P5&quot;, &quot;P7&quot;, &quot;P8&quot;]</code></div></div>
+  </div>
+  <details><summary>Got -- full row response (all columns)</summary><pre>[[[{&quot;replies&quot;: [{&quot;author&quot;: &quot;alice&quot;, &quot;score&quot;: 5}]}, {&quot;replies&quot;: [{&quot;author&quot;: &quot;bob&quot;, &quot;score&quot;: 90}]}], &quot;P1&quot;, 60], [[{&quot;replies&quot;: [{&quot;author&quot;: &quot;bob&quot;, &quot;score&quot;: 10}]}, {&quot;replies&quot;: [{&quot;author&quot;: &quot;carol&quot;, &quot;score&quot;: 20}]}], &quot;P3&quot;, 70], [null, &quot;P5&quot;, 90], [[{&quot;replies&quot;: [{&quot;author&quot;: &quot;bob&quot;, &quot;score&quot;: 90}]}], &quot;P7&quot;, 55], [[{&quot;replies&quot;: [{&quot;author&quot;: &quot;alice&quot;, &quot;score&quot;: 5}]}, {&quot;replies&quot;: [{&quot;author&quot;: &quot;alice&quot;, &quot;score&quot;: 90}]}], &quot;P8&quot;, 80]]</pre></details>
+  <details><summary>RelNode (raw, pre-rewrite)</summary><pre>LogicalFilter(condition=[&gt;($2, 50)])
+  LogicalTableScan(table=[[opensearch, cmts_deep]])</pre></details>
+  <details><summary>RelNode (rewritten, post nested-field-rewrite)</summary><pre>LogicalFilter(condition=[&gt;($2, 50)])
+  LogicalTableScan(table=[[opensearch, cmts_deep]])</pre></details>
+  <details><summary>Logical plan (final, annotated with backend routing)</summary><pre>OpenSearchFilter(condition=[ANNOTATED_PREDICATE(id=0, backends=[datafusion], &gt;($2, 50))], viableBackends=[[datafusion]])
+  OpenSearchTableScan(table=[[cmts_deep]], viableBackends=[[lucene, datafusion]])</pre></details>
+  
+</div>
+
+
+<div class="case-card pass">
+  <div class="case-title">#3 <span class="badge badge-pass">MATCH</span></div>
+  <p><b>PPL query:</b></p><pre>source=cmts_deep | where title = &quot;P1&quot; and views &gt; 50</pre>
+  
+  <div class="two-col">
+    <div><p><b>Expected (title):</b></p><div class="result-box"><code>[&quot;P1&quot;]</code></div></div>
+    <div><p><b>Got (title, extracted from full row response):</b></p><div class="result-box"><code>[&quot;P1&quot;]</code></div></div>
+  </div>
+  <details><summary>Got -- full row response (all columns)</summary><pre>[[[{&quot;replies&quot;: [{&quot;author&quot;: &quot;alice&quot;, &quot;score&quot;: 5}]}, {&quot;replies&quot;: [{&quot;author&quot;: &quot;bob&quot;, &quot;score&quot;: 90}]}], &quot;P1&quot;, 60]]</pre></details>
+  <details><summary>RelNode (raw, pre-rewrite)</summary><pre>LogicalFilter(condition=[AND(=($1, &#x27;P1&#x27;), &gt;($2, 50))])
+  LogicalTableScan(table=[[opensearch, cmts_deep]])</pre></details>
+  <details><summary>RelNode (rewritten, post nested-field-rewrite)</summary><pre>LogicalFilter(condition=[AND(=($1, &#x27;P1&#x27;), &gt;($2, 50))])
+  LogicalTableScan(table=[[opensearch, cmts_deep]])</pre></details>
+  <details><summary>Logical plan (final, annotated with backend routing)</summary><pre>OpenSearchFilter(condition=[AND(ANNOTATED_PREDICATE(id=0, backends=[lucene, datafusion], =($1, &#x27;P1&#x27;)), ANNOTATED_PREDICATE(id=1, backends=[datafusion], &gt;($2, 50)))], viableBackends=[[datafusion]])
+  OpenSearchTableScan(table=[[cmts_deep]], viableBackends=[[lucene, datafusion]])</pre></details>
+  
+</div>
+
+
+<div class="case-card pass">
+  <div class="case-title">#4 <span class="badge badge-pass">MATCH</span></div>
+  <p><b>PPL query:</b></p><pre>source=cmts_deep | where title = &quot;P1&quot; or title = &quot;P2&quot;</pre>
+  
+  <div class="two-col">
+    <div><p><b>Expected (title):</b></p><div class="result-box"><code>[&quot;P1&quot;, &quot;P2&quot;]</code></div></div>
+    <div><p><b>Got (title, extracted from full row response):</b></p><div class="result-box"><code>[&quot;P1&quot;, &quot;P2&quot;]</code></div></div>
+  </div>
+  <details><summary>Got -- full row response (all columns)</summary><pre>[[[{&quot;replies&quot;: [{&quot;author&quot;: &quot;alice&quot;, &quot;score&quot;: 5}]}, {&quot;replies&quot;: [{&quot;author&quot;: &quot;bob&quot;, &quot;score&quot;: 90}]}], &quot;P1&quot;, 60], [[{&quot;replies&quot;: [{&quot;author&quot;: &quot;alice&quot;, &quot;score&quot;: 99}]}], &quot;P2&quot;, 30]]</pre></details>
+  <details><summary>RelNode (raw, pre-rewrite)</summary><pre>LogicalFilter(condition=[SEARCH($1, Sarg[&#x27;P1&#x27;:VARCHAR, &#x27;P2&#x27;:VARCHAR]:VARCHAR)])
+  LogicalTableScan(table=[[opensearch, cmts_deep]])</pre></details>
+  <details><summary>RelNode (rewritten, post nested-field-rewrite)</summary><pre>LogicalFilter(condition=[SEARCH($1, Sarg[&#x27;P1&#x27;:VARCHAR, &#x27;P2&#x27;:VARCHAR]:VARCHAR)])
+  LogicalTableScan(table=[[opensearch, cmts_deep]])</pre></details>
+  <details><summary>Logical plan (final, annotated with backend routing)</summary><pre>OpenSearchFilter(condition=[ANNOTATED_PREDICATE(id=0, backends=[datafusion], SEARCH($1, Sarg[&#x27;P1&#x27;:VARCHAR, &#x27;P2&#x27;:VARCHAR]:VARCHAR))], viableBackends=[[datafusion]])
+  OpenSearchTableScan(table=[[cmts_deep]], viableBackends=[[lucene, datafusion]])</pre></details>
+  
+</div>
+
+
+<div class="case-card pass">
+  <div class="case-title">#4a <span class="badge badge-pass">MATCH</span></div>
+  <p><b>PPL query:</b></p><pre>source=cmts_deep | where not (title = &quot;P1&quot;)</pre>
+  
+  <div class="two-col">
+    <div><p><b>Expected (title):</b></p><div class="result-box"><code>[&quot;P2&quot;, &quot;P3&quot;, &quot;P4&quot;, &quot;P5&quot;, &quot;P6&quot;, &quot;P7&quot;, &quot;P8&quot;]</code></div></div>
+    <div><p><b>Got (title, extracted from full row response):</b></p><div class="result-box"><code>[&quot;P2&quot;, &quot;P3&quot;, &quot;P4&quot;, &quot;P5&quot;, &quot;P6&quot;, &quot;P7&quot;, &quot;P8&quot;]</code></div></div>
+  </div>
+  <details><summary>Got -- full row response (all columns)</summary><pre>[[[{&quot;replies&quot;: [{&quot;author&quot;: &quot;alice&quot;, &quot;score&quot;: 99}]}], &quot;P2&quot;, 30], [[{&quot;replies&quot;: [{&quot;author&quot;: &quot;bob&quot;, &quot;score&quot;: 10}]}, {&quot;replies&quot;: [{&quot;author&quot;: &quot;carol&quot;, &quot;score&quot;: 20}]}], &quot;P3&quot;, 70], [null, &quot;P4&quot;, 10], [null, &quot;P5&quot;, 90], [[{&quot;replies&quot;: [{&quot;author&quot;: &quot;alice&quot;, &quot;score&quot;: 5}]}], &quot;P6&quot;, 45], [[{&quot;replies&quot;: [{&quot;author&quot;: &quot;bob&quot;, &quot;score&quot;: 90}]}], &quot;P7&quot;, 55], [[{&quot;replies&quot;: [{&quot;author&quot;: &quot;alice&quot;, &quot;score&quot;: 5}]}, {&quot;replies&quot;: [{&quot;author&quot;: &quot;alice&quot;, &quot;score&quot;: 90}]}], &quot;P8&quot;, 80]]</pre></details>
+  <details><summary>RelNode (raw, pre-rewrite)</summary><pre>LogicalFilter(condition=[&lt;&gt;($1, &#x27;P1&#x27;)])
+  LogicalTableScan(table=[[opensearch, cmts_deep]])</pre></details>
+  <details><summary>RelNode (rewritten, post nested-field-rewrite)</summary><pre>LogicalFilter(condition=[&lt;&gt;($1, &#x27;P1&#x27;)])
+  LogicalTableScan(table=[[opensearch, cmts_deep]])</pre></details>
+  <details><summary>Logical plan (final, annotated with backend routing)</summary><pre>OpenSearchFilter(condition=[ANNOTATED_PREDICATE(id=0, backends=[datafusion], &lt;&gt;($1, &#x27;P1&#x27;))], viableBackends=[[datafusion]])
+  OpenSearchTableScan(table=[[cmts_deep]], viableBackends=[[lucene, datafusion]])</pre></details>
+  
+</div>
+
+
+<div class="case-card pass">
+  <div class="case-title">#4b <span class="badge badge-pass">MATCH</span></div>
+  <p><b>PPL query:</b></p><pre>source=cmts_deep | where not (title = &quot;P1&quot; and views &gt; 50)</pre>
+  
+  <div class="two-col">
+    <div><p><b>Expected (title):</b></p><div class="result-box"><code>[&quot;P2&quot;, &quot;P3&quot;, &quot;P4&quot;, &quot;P5&quot;, &quot;P6&quot;, &quot;P7&quot;, &quot;P8&quot;]</code></div></div>
+    <div><p><b>Got (title, extracted from full row response):</b></p><div class="result-box"><code>[&quot;P2&quot;, &quot;P3&quot;, &quot;P4&quot;, &quot;P5&quot;, &quot;P6&quot;, &quot;P7&quot;, &quot;P8&quot;]</code></div></div>
+  </div>
+  <details><summary>Got -- full row response (all columns)</summary><pre>[[[{&quot;replies&quot;: [{&quot;author&quot;: &quot;alice&quot;, &quot;score&quot;: 99}]}], &quot;P2&quot;, 30], [[{&quot;replies&quot;: [{&quot;author&quot;: &quot;bob&quot;, &quot;score&quot;: 10}]}, {&quot;replies&quot;: [{&quot;author&quot;: &quot;carol&quot;, &quot;score&quot;: 20}]}], &quot;P3&quot;, 70], [null, &quot;P4&quot;, 10], [null, &quot;P5&quot;, 90], [[{&quot;replies&quot;: [{&quot;author&quot;: &quot;alice&quot;, &quot;score&quot;: 5}]}], &quot;P6&quot;, 45], [[{&quot;replies&quot;: [{&quot;author&quot;: &quot;bob&quot;, &quot;score&quot;: 90}]}], &quot;P7&quot;, 55], [[{&quot;replies&quot;: [{&quot;author&quot;: &quot;alice&quot;, &quot;score&quot;: 5}]}, {&quot;replies&quot;: [{&quot;author&quot;: &quot;alice&quot;, &quot;score&quot;: 90}]}], &quot;P8&quot;, 80]]</pre></details>
+  <details><summary>RelNode (raw, pre-rewrite)</summary><pre>LogicalFilter(condition=[OR(&lt;&gt;($1, &#x27;P1&#x27;), &lt;=($2, 50))])
+  LogicalTableScan(table=[[opensearch, cmts_deep]])</pre></details>
+  <details><summary>RelNode (rewritten, post nested-field-rewrite)</summary><pre>LogicalFilter(condition=[OR(&lt;&gt;($1, &#x27;P1&#x27;), &lt;=($2, 50))])
+  LogicalTableScan(table=[[opensearch, cmts_deep]])</pre></details>
+  <details><summary>Logical plan (final, annotated with backend routing)</summary><pre>OpenSearchFilter(condition=[OR(ANNOTATED_PREDICATE(id=0, backends=[datafusion], &lt;&gt;($1, &#x27;P1&#x27;)), ANNOTATED_PREDICATE(id=1, backends=[datafusion], &lt;=($2, 50)))], viableBackends=[[datafusion]])
+  OpenSearchTableScan(table=[[cmts_deep]], viableBackends=[[lucene, datafusion]])</pre></details>
+  
+</div>
+
+
+
+<div class="section-header"><h2>(B) SINGLE nested equality, multi-level (comments.replies.author) <span class="badge badge-sec">2/2</span></h2></div>
+
+<div class="case-card pass">
+  <div class="case-title">#5 <span class="badge badge-pass">MATCH</span></div>
+  <p><b>PPL query:</b></p><pre>source=cmts_deep | where comments.replies.author = &quot;alice&quot;</pre>
+  
+  <div class="two-col">
+    <div><p><b>Expected (title):</b></p><div class="result-box"><code>[&quot;P1&quot;, &quot;P2&quot;, &quot;P6&quot;, &quot;P8&quot;]</code></div></div>
+    <div><p><b>Got (title, extracted from full row response):</b></p><div class="result-box"><code>[&quot;P1&quot;, &quot;P2&quot;, &quot;P6&quot;, &quot;P8&quot;]</code></div></div>
+  </div>
+  <details><summary>Got -- full row response (all columns)</summary><pre>[[[{&quot;replies&quot;: [{&quot;author&quot;: &quot;alice&quot;, &quot;score&quot;: 5}]}, {&quot;replies&quot;: [{&quot;author&quot;: &quot;bob&quot;, &quot;score&quot;: 90}]}], &quot;P1&quot;, 60], [[{&quot;replies&quot;: [{&quot;author&quot;: &quot;alice&quot;, &quot;score&quot;: 99}]}], &quot;P2&quot;, 30], [[{&quot;replies&quot;: [{&quot;author&quot;: &quot;alice&quot;, &quot;score&quot;: 5}]}], &quot;P6&quot;, 45], [[{&quot;replies&quot;: [{&quot;author&quot;: &quot;alice&quot;, &quot;score&quot;: 5}]}, {&quot;replies&quot;: [{&quot;author&quot;: &quot;alice&quot;, &quot;score&quot;: 90}]}], &quot;P8&quot;, 80]]</pre></details>
+  <details><summary>RelNode (raw, pre-rewrite)</summary><pre>LogicalFilter(condition=[=(ITEM(ITEM($0, &#x27;replies&#x27;), &#x27;author&#x27;), &#x27;alice&#x27;)])
+  LogicalTableScan(table=[[opensearch, cmts_deep]])</pre></details>
+  <details><summary>RelNode (rewritten, post nested-field-rewrite)</summary><pre>LogicalFilter(condition=[NESTED_ANY_MATCH_EXPR($0, &#x27;{&quot;nested&quot;:&quot;replies&quot;,&quot;inner&quot;:{&quot;op&quot;:&quot;=&quot;,&quot;args&quot;:[{&quot;field&quot;:&quot;author&quot;},{&quot;lit&quot;:&quot;alice&quot;}]}}&#x27;)])
+  LogicalTableScan(table=[[opensearch, cmts_deep]])</pre></details>
+  <details><summary>Logical plan (final, annotated with backend routing)</summary><pre>OpenSearchFilter(condition=[ANNOTATED_PREDICATE(id=0, backends=[lucene, datafusion], NESTED_ANY_MATCH_EXPR($0, &#x27;{&quot;nested&quot;:&quot;replies&quot;,&quot;inner&quot;:{&quot;op&quot;:&quot;=&quot;,&quot;args&quot;:[{&quot;field&quot;:&quot;author&quot;},{&quot;lit&quot;:&quot;alice&quot;}]}}&#x27;))], viableBackends=[[lucene, datafusion]])
+  OpenSearchTableScan(table=[[cmts_deep]], viableBackends=[[lucene, datafusion]])</pre></details>
+  
+</div>
+
+
+<div class="case-card pass">
+  <div class="case-title">#5a <span class="badge badge-pass">MATCH</span></div>
+  <p><b>PPL query:</b></p><pre>source=cmts_deep | where not (comments.replies.author = &quot;alice&quot;)</pre>
+  
+  <div class="two-col">
+    <div><p><b>Expected (title):</b></p><div class="result-box"><code>[&quot;P1&quot;, &quot;P3&quot;, &quot;P7&quot;]</code></div></div>
+    <div><p><b>Got (title, extracted from full row response):</b></p><div class="result-box"><code>[&quot;P1&quot;, &quot;P3&quot;, &quot;P7&quot;]</code></div></div>
+  </div>
+  <details><summary>Got -- full row response (all columns)</summary><pre>[[[{&quot;replies&quot;: [{&quot;author&quot;: &quot;alice&quot;, &quot;score&quot;: 5}]}, {&quot;replies&quot;: [{&quot;author&quot;: &quot;bob&quot;, &quot;score&quot;: 90}]}], &quot;P1&quot;, 60], [[{&quot;replies&quot;: [{&quot;author&quot;: &quot;bob&quot;, &quot;score&quot;: 10}]}, {&quot;replies&quot;: [{&quot;author&quot;: &quot;carol&quot;, &quot;score&quot;: 20}]}], &quot;P3&quot;, 70], [[{&quot;replies&quot;: [{&quot;author&quot;: &quot;bob&quot;, &quot;score&quot;: 90}]}], &quot;P7&quot;, 55]]</pre></details>
+  <details><summary>RelNode (raw, pre-rewrite)</summary><pre>LogicalFilter(condition=[&lt;&gt;(ITEM(ITEM($0, &#x27;replies&#x27;), &#x27;author&#x27;), &#x27;alice&#x27;)])
+  LogicalTableScan(table=[[opensearch, cmts_deep]])</pre></details>
+  <details><summary>RelNode (rewritten, post nested-field-rewrite)</summary><pre>LogicalFilter(condition=[NESTED_ANY_MATCH_EXPR($0, &#x27;{&quot;nested&quot;:&quot;replies&quot;,&quot;inner&quot;:{&quot;op&quot;:&quot;!=&quot;,&quot;args&quot;:[{&quot;field&quot;:&quot;author&quot;},{&quot;lit&quot;:&quot;alice&quot;}]}}&#x27;)])
+  LogicalTableScan(table=[[opensearch, cmts_deep]])</pre></details>
+  <details><summary>Logical plan (final, annotated with backend routing)</summary><pre>OpenSearchFilter(condition=[ANNOTATED_PREDICATE(id=0, backends=[datafusion], NESTED_ANY_MATCH_EXPR($0, &#x27;{&quot;nested&quot;:&quot;replies&quot;,&quot;inner&quot;:{&quot;op&quot;:&quot;!=&quot;,&quot;args&quot;:[{&quot;field&quot;:&quot;author&quot;},{&quot;lit&quot;:&quot;alice&quot;}]}}&#x27;))], viableBackends=[[datafusion]])
+  OpenSearchTableScan(table=[[cmts_deep]], viableBackends=[[lucene, datafusion]])</pre></details>
+  <div class="note-box"><b>Note.</b> ∃¬ reading (“some element fails”), not ¬∃ (“no element matches”) -- both are defensible readings of raw PPL not(nested); this is the documented, pre-existing F3_neg_grain ambiguity, unrelated to this report&#x27;s scope. Same reading, same result set, as the single-level report&#x27;s #5a.</div>
+</div>
+
+
+
+<div class="section-header"><h2>(B) SINGLE nested equality, multi-level (c3, unchanged) <span class="badge badge-sec">1/1</span></h2></div>
+
+<div class="case-card pass">
+  <div class="case-title">#6 <span class="badge badge-pass">MATCH</span></div>
+  <p><b>PPL query:</b></p><pre>source=c3 | where products.variants.color = &quot;red&quot;</pre>
+  
+  <div class="two-col">
+    <div><p><b>Expected (title):</b></p><div class="result-box"><code>[&quot;C1&quot;, &quot;C2&quot;, &quot;C5&quot;, &quot;C6&quot;, &quot;C7&quot;]</code></div></div>
+    <div><p><b>Got (title, extracted from full row response):</b></p><div class="result-box"><code>[&quot;C1&quot;, &quot;C2&quot;, &quot;C5&quot;, &quot;C6&quot;, &quot;C7&quot;]</code></div></div>
+  </div>
+  <details><summary>Got -- full row response (all columns)</summary><pre>[[[{&quot;pname&quot;: &quot;Widget&quot;, &quot;variants&quot;: [{&quot;color&quot;: &quot;red&quot;, &quot;price&quot;: 200, &quot;specs&quot;: [{&quot;key&quot;: &quot;weight&quot;, &quot;val&quot;: 2}, {&quot;key&quot;: &quot;size&quot;, &quot;val&quot;: 10}]}]}], &quot;C1&quot;], [[{&quot;pname&quot;: &quot;Sprocket&quot;, &quot;variants&quot;: [{&quot;color&quot;: &quot;red&quot;, &quot;price&quot;: 50, &quot;specs&quot;: [{&quot;key&quot;: &quot;weight&quot;, &quot;val&quot;: 2}, {&quot;key&quot;: &quot;size&quot;, &quot;val&quot;: 10}]}, {&quot;color&quot;: &quot;green&quot;, &quot;price&quot;: 200}]}], &quot;C2&quot;], [[{&quot;pname&quot;: &quot;Thingamajig&quot;, &quot;variants&quot;: [{&quot;color&quot;: &quot;red&quot;, &quot;price&quot;: 100}]}], &quot;C5&quot;], [[{&quot;pname&quot;: &quot;Gadget&quot;, &quot;variants&quot;: [{&quot;color&quot;: &quot;blue&quot;, &quot;price&quot;: 100, &quot;specs&quot;: [{&quot;key&quot;: &quot;weight&quot;, &quot;val&quot;: 99}]}, {&quot;color&quot;: &quot;red&quot;, &quot;price&quot;: 100, &quot;specs&quot;: [{&quot;key&quot;: &quot;weight&quot;, &quot;val&quot;: 2}]}]}], &quot;C6&quot;], [[{&quot;pname&quot;: &quot;Doohickey&quot;, &quot;variants&quot;: [{&quot;color&quot;: &quot;red&quot;, &quot;price&quot;: 120, &quot;specs&quot;: [{&quot;key&quot;: &quot;weight&quot;, &quot;val&quot;: 60}]}]}], &quot;C7&quot;]]</pre></details>
+  <details><summary>RelNode (raw, pre-rewrite)</summary><pre>LogicalFilter(condition=[=(ITEM(ITEM($0, &#x27;variants&#x27;), &#x27;color&#x27;), &#x27;red&#x27;)])
+  LogicalTableScan(table=[[opensearch, c3]])</pre></details>
+  <details><summary>RelNode (rewritten, post nested-field-rewrite)</summary><pre>LogicalFilter(condition=[NESTED_ANY_MATCH_EXPR($0, &#x27;{&quot;nested&quot;:&quot;variants&quot;,&quot;inner&quot;:{&quot;op&quot;:&quot;=&quot;,&quot;args&quot;:[{&quot;field&quot;:&quot;color&quot;},{&quot;lit&quot;:&quot;red&quot;}]}}&#x27;)])
+  LogicalTableScan(table=[[opensearch, c3]])</pre></details>
+  <details><summary>Logical plan (final, annotated with backend routing)</summary><pre>OpenSearchFilter(condition=[ANNOTATED_PREDICATE(id=0, backends=[lucene, datafusion], NESTED_ANY_MATCH_EXPR($0, &#x27;{&quot;nested&quot;:&quot;variants&quot;,&quot;inner&quot;:{&quot;op&quot;:&quot;=&quot;,&quot;args&quot;:[{&quot;field&quot;:&quot;color&quot;},{&quot;lit&quot;:&quot;red&quot;}]}}&#x27;))], viableBackends=[[lucene, datafusion]])
+  OpenSearchTableScan(table=[[c3]], viableBackends=[[lucene, datafusion]])</pre></details>
+  
+</div>
+
+
+
+<div class="section-header"><h2>(B) nested + 1 flat conjunct, multi-level <span class="badge badge-sec">1/1</span></h2></div>
+
+<div class="case-card pass">
+  <div class="case-title">#7 <span class="badge badge-pass">MATCH</span></div>
+  <p><b>PPL query:</b></p><pre>source=cmts_deep | where comments.replies.author = &quot;alice&quot; and views &gt; 50</pre>
+  
+  <div class="two-col">
+    <div><p><b>Expected (title):</b></p><div class="result-box"><code>[&quot;P1&quot;, &quot;P8&quot;]</code></div></div>
+    <div><p><b>Got (title, extracted from full row response):</b></p><div class="result-box"><code>[&quot;P1&quot;, &quot;P8&quot;]</code></div></div>
+  </div>
+  <details><summary>Got -- full row response (all columns)</summary><pre>[[[{&quot;replies&quot;: [{&quot;author&quot;: &quot;alice&quot;, &quot;score&quot;: 5}]}, {&quot;replies&quot;: [{&quot;author&quot;: &quot;bob&quot;, &quot;score&quot;: 90}]}], &quot;P1&quot;, 60], [[{&quot;replies&quot;: [{&quot;author&quot;: &quot;alice&quot;, &quot;score&quot;: 5}]}, {&quot;replies&quot;: [{&quot;author&quot;: &quot;alice&quot;, &quot;score&quot;: 90}]}], &quot;P8&quot;, 80]]</pre></details>
+  <details><summary>RelNode (raw, pre-rewrite)</summary><pre>LogicalFilter(condition=[AND(=(ITEM(ITEM($0, &#x27;replies&#x27;), &#x27;author&#x27;), &#x27;alice&#x27;), &gt;($2, 50))])
+  LogicalTableScan(table=[[opensearch, cmts_deep]])</pre></details>
+  <details><summary>RelNode (rewritten, post nested-field-rewrite)</summary><pre>LogicalFilter(condition=[AND(NESTED_ANY_MATCH_EXPR($0, &#x27;{&quot;nested&quot;:&quot;replies&quot;,&quot;inner&quot;:{&quot;op&quot;:&quot;=&quot;,&quot;args&quot;:[{&quot;field&quot;:&quot;author&quot;},{&quot;lit&quot;:&quot;alice&quot;}]}}&#x27;), &gt;($2, 50))])
+  LogicalTableScan(table=[[opensearch, cmts_deep]])</pre></details>
+  <details><summary>Logical plan (final, annotated with backend routing)</summary><pre>OpenSearchFilter(condition=[AND(ANNOTATED_PREDICATE(id=0, backends=[lucene, datafusion], NESTED_ANY_MATCH_EXPR($0, &#x27;{&quot;nested&quot;:&quot;replies&quot;,&quot;inner&quot;:{&quot;op&quot;:&quot;=&quot;,&quot;args&quot;:[{&quot;field&quot;:&quot;author&quot;},{&quot;lit&quot;:&quot;alice&quot;}]}}&#x27;)), ANNOTATED_PREDICATE(id=1, backends=[datafusion], &gt;($2, 50)))], viableBackends=[[datafusion]])
+  OpenSearchTableScan(table=[[cmts_deep]], viableBackends=[[lucene, datafusion]])</pre></details>
+  
+</div>
+
+
+
+<div class="section-header"><h2>(B) nested + 1 flat conjunct (NOT on flat), multi-level <span class="badge badge-sec">1/1</span></h2></div>
+
+<div class="case-card pass">
+  <div class="case-title">#7a <span class="badge badge-pass">MATCH</span></div>
+  <p><b>PPL query:</b></p><pre>source=cmts_deep | where comments.replies.author = &quot;alice&quot; and not (views &gt; 50)</pre>
+  
+  <div class="two-col">
+    <div><p><b>Expected (title):</b></p><div class="result-box"><code>[&quot;P2&quot;, &quot;P6&quot;]</code></div></div>
+    <div><p><b>Got (title, extracted from full row response):</b></p><div class="result-box"><code>[&quot;P2&quot;, &quot;P6&quot;]</code></div></div>
+  </div>
+  <details><summary>Got -- full row response (all columns)</summary><pre>[[[{&quot;replies&quot;: [{&quot;author&quot;: &quot;alice&quot;, &quot;score&quot;: 99}]}], &quot;P2&quot;, 30], [[{&quot;replies&quot;: [{&quot;author&quot;: &quot;alice&quot;, &quot;score&quot;: 5}]}], &quot;P6&quot;, 45]]</pre></details>
+  <details><summary>RelNode (raw, pre-rewrite)</summary><pre>LogicalFilter(condition=[AND(=(ITEM(ITEM($0, &#x27;replies&#x27;), &#x27;author&#x27;), &#x27;alice&#x27;), &lt;=($2, 50))])
+  LogicalTableScan(table=[[opensearch, cmts_deep]])</pre></details>
+  <details><summary>RelNode (rewritten, post nested-field-rewrite)</summary><pre>LogicalFilter(condition=[AND(NESTED_ANY_MATCH_EXPR($0, &#x27;{&quot;nested&quot;:&quot;replies&quot;,&quot;inner&quot;:{&quot;op&quot;:&quot;=&quot;,&quot;args&quot;:[{&quot;field&quot;:&quot;author&quot;},{&quot;lit&quot;:&quot;alice&quot;}]}}&#x27;), &lt;=($2, 50))])
+  LogicalTableScan(table=[[opensearch, cmts_deep]])</pre></details>
+  <details><summary>Logical plan (final, annotated with backend routing)</summary><pre>OpenSearchFilter(condition=[AND(ANNOTATED_PREDICATE(id=0, backends=[lucene, datafusion], NESTED_ANY_MATCH_EXPR($0, &#x27;{&quot;nested&quot;:&quot;replies&quot;,&quot;inner&quot;:{&quot;op&quot;:&quot;=&quot;,&quot;args&quot;:[{&quot;field&quot;:&quot;author&quot;},{&quot;lit&quot;:&quot;alice&quot;}]}}&#x27;)), ANNOTATED_PREDICATE(id=1, backends=[datafusion], &lt;=($2, 50)))], viableBackends=[[datafusion]])
+  OpenSearchTableScan(table=[[cmts_deep]], viableBackends=[[lucene, datafusion]])</pre></details>
+  
+</div>
+
+
+
+<div class="section-header"><h2>(B) nested + 1 flat conjunct, multi-level (c3, unchanged) <span class="badge badge-sec">1/1</span></h2></div>
+
+<div class="case-card pass">
+  <div class="case-title">#8 <span class="badge badge-pass">MATCH</span></div>
+  <p><b>PPL query:</b></p><pre>source=c3 | where products.variants.color = &quot;red&quot; and title = &quot;C1&quot;</pre>
+  
+  <div class="two-col">
+    <div><p><b>Expected (title):</b></p><div class="result-box"><code>[&quot;C1&quot;]</code></div></div>
+    <div><p><b>Got (title, extracted from full row response):</b></p><div class="result-box"><code>[&quot;C1&quot;]</code></div></div>
+  </div>
+  <details><summary>Got -- full row response (all columns)</summary><pre>[[[{&quot;pname&quot;: &quot;Widget&quot;, &quot;variants&quot;: [{&quot;color&quot;: &quot;red&quot;, &quot;price&quot;: 200, &quot;specs&quot;: [{&quot;key&quot;: &quot;weight&quot;, &quot;val&quot;: 2}, {&quot;key&quot;: &quot;size&quot;, &quot;val&quot;: 10}]}]}], &quot;C1&quot;]]</pre></details>
+  <details><summary>RelNode (raw, pre-rewrite)</summary><pre>LogicalFilter(condition=[AND(=(ITEM(ITEM($0, &#x27;variants&#x27;), &#x27;color&#x27;), &#x27;red&#x27;), =($1, &#x27;C1&#x27;))])
+  LogicalTableScan(table=[[opensearch, c3]])</pre></details>
+  <details><summary>RelNode (rewritten, post nested-field-rewrite)</summary><pre>LogicalFilter(condition=[AND(NESTED_ANY_MATCH_EXPR($0, &#x27;{&quot;nested&quot;:&quot;variants&quot;,&quot;inner&quot;:{&quot;op&quot;:&quot;=&quot;,&quot;args&quot;:[{&quot;field&quot;:&quot;color&quot;},{&quot;lit&quot;:&quot;red&quot;}]}}&#x27;), =($1, &#x27;C1&#x27;))])
+  LogicalTableScan(table=[[opensearch, c3]])</pre></details>
+  <details><summary>Logical plan (final, annotated with backend routing)</summary><pre>OpenSearchFilter(condition=[AND(ANNOTATED_PREDICATE(id=0, backends=[lucene, datafusion], NESTED_ANY_MATCH_EXPR($0, &#x27;{&quot;nested&quot;:&quot;variants&quot;,&quot;inner&quot;:{&quot;op&quot;:&quot;=&quot;,&quot;args&quot;:[{&quot;field&quot;:&quot;color&quot;},{&quot;lit&quot;:&quot;red&quot;}]}}&#x27;)), ANNOTATED_PREDICATE(id=1, backends=[lucene, datafusion], =($1, &#x27;C1&#x27;)))], viableBackends=[[lucene, datafusion]])
+  OpenSearchTableScan(table=[[c3]], viableBackends=[[lucene, datafusion]])</pre></details>
+  
+</div>
+
+
+
+<div class="section-header"><h2>(B) nested + multiple flat conjuncts, multi-level <span class="badge badge-sec">1/1</span></h2></div>
+
+<div class="case-card pass">
+  <div class="case-title">#9 <span class="badge badge-pass">MATCH</span></div>
+  <p><b>PPL query:</b></p><pre>source=cmts_deep | where comments.replies.author = &quot;alice&quot; and views &gt; 50 and title = &quot;P1&quot;</pre>
+  
+  <div class="two-col">
+    <div><p><b>Expected (title):</b></p><div class="result-box"><code>[&quot;P1&quot;]</code></div></div>
+    <div><p><b>Got (title, extracted from full row response):</b></p><div class="result-box"><code>[&quot;P1&quot;]</code></div></div>
+  </div>
+  <details><summary>Got -- full row response (all columns)</summary><pre>[[[{&quot;replies&quot;: [{&quot;author&quot;: &quot;alice&quot;, &quot;score&quot;: 5}]}, {&quot;replies&quot;: [{&quot;author&quot;: &quot;bob&quot;, &quot;score&quot;: 90}]}], &quot;P1&quot;, 60]]</pre></details>
+  <details><summary>RelNode (raw, pre-rewrite)</summary><pre>LogicalFilter(condition=[AND(=(ITEM(ITEM($0, &#x27;replies&#x27;), &#x27;author&#x27;), &#x27;alice&#x27;), &gt;($2, 50), =($1, &#x27;P1&#x27;))])
+  LogicalTableScan(table=[[opensearch, cmts_deep]])</pre></details>
+  <details><summary>RelNode (rewritten, post nested-field-rewrite)</summary><pre>LogicalFilter(condition=[AND(NESTED_ANY_MATCH_EXPR($0, &#x27;{&quot;nested&quot;:&quot;replies&quot;,&quot;inner&quot;:{&quot;op&quot;:&quot;=&quot;,&quot;args&quot;:[{&quot;field&quot;:&quot;author&quot;},{&quot;lit&quot;:&quot;alice&quot;}]}}&#x27;), &gt;($2, 50), =($1, &#x27;P1&#x27;))])
+  LogicalTableScan(table=[[opensearch, cmts_deep]])</pre></details>
+  <details><summary>Logical plan (final, annotated with backend routing)</summary><pre>OpenSearchFilter(condition=[AND(ANNOTATED_PREDICATE(id=0, backends=[lucene, datafusion], NESTED_ANY_MATCH_EXPR($0, &#x27;{&quot;nested&quot;:&quot;replies&quot;,&quot;inner&quot;:{&quot;op&quot;:&quot;=&quot;,&quot;args&quot;:[{&quot;field&quot;:&quot;author&quot;},{&quot;lit&quot;:&quot;alice&quot;}]}}&#x27;)), ANNOTATED_PREDICATE(id=1, backends=[datafusion], &gt;($2, 50)), ANNOTATED_PREDICATE(id=2, backends=[lucene, datafusion], =($1, &#x27;P1&#x27;)))], viableBackends=[[datafusion]])
+  OpenSearchTableScan(table=[[cmts_deep]], viableBackends=[[lucene, datafusion]])</pre></details>
+  
+</div>
+
+
+
+<div class="section-header"><h2>(B-negative) OR breaks the classification, multi-level <span class="badge badge-sec">1/1</span></h2></div>
+
+<div class="case-card pass">
+  <div class="case-title">#10 <span class="badge badge-pass">MATCH</span></div>
+  <p><b>PPL query:</b></p><pre>source=cmts_deep | where comments.replies.author = &quot;alice&quot; or views &gt; 50</pre>
+  
+  <div class="two-col">
+    <div><p><b>Expected (title):</b></p><div class="result-box"><code>[&quot;P1&quot;, &quot;P2&quot;, &quot;P3&quot;, &quot;P5&quot;, &quot;P6&quot;, &quot;P7&quot;, &quot;P8&quot;]</code></div></div>
+    <div><p><b>Got (title, extracted from full row response):</b></p><div class="result-box"><code>[&quot;P1&quot;, &quot;P2&quot;, &quot;P3&quot;, &quot;P5&quot;, &quot;P6&quot;, &quot;P7&quot;, &quot;P8&quot;]</code></div></div>
+  </div>
+  <details><summary>Got -- full row response (all columns)</summary><pre>[[[{&quot;replies&quot;: [{&quot;author&quot;: &quot;alice&quot;, &quot;score&quot;: 5}]}, {&quot;replies&quot;: [{&quot;author&quot;: &quot;bob&quot;, &quot;score&quot;: 90}]}], &quot;P1&quot;, 60], [[{&quot;replies&quot;: [{&quot;author&quot;: &quot;alice&quot;, &quot;score&quot;: 99}]}], &quot;P2&quot;, 30], [[{&quot;replies&quot;: [{&quot;author&quot;: &quot;bob&quot;, &quot;score&quot;: 10}]}, {&quot;replies&quot;: [{&quot;author&quot;: &quot;carol&quot;, &quot;score&quot;: 20}]}], &quot;P3&quot;, 70], [null, &quot;P5&quot;, 90], [[{&quot;replies&quot;: [{&quot;author&quot;: &quot;alice&quot;, &quot;score&quot;: 5}]}], &quot;P6&quot;, 45], [[{&quot;replies&quot;: [{&quot;author&quot;: &quot;bob&quot;, &quot;score&quot;: 90}]}], &quot;P7&quot;, 55], [[{&quot;replies&quot;: [{&quot;author&quot;: &quot;alice&quot;, &quot;score&quot;: 5}]}, {&quot;replies&quot;: [{&quot;author&quot;: &quot;alice&quot;, &quot;score&quot;: 90}]}], &quot;P8&quot;, 80]]</pre></details>
+  <details><summary>RelNode (raw, pre-rewrite)</summary><pre>LogicalFilter(condition=[OR(=(ITEM(ITEM($0, &#x27;replies&#x27;), &#x27;author&#x27;), &#x27;alice&#x27;), &gt;($2, 50))])
+  LogicalTableScan(table=[[opensearch, cmts_deep]])</pre></details>
+  <details><summary>RelNode (rewritten, post nested-field-rewrite)</summary><pre>LogicalFilter(condition=[OR(NESTED_ANY_MATCH_EXPR($0, &#x27;{&quot;nested&quot;:&quot;replies&quot;,&quot;inner&quot;:{&quot;op&quot;:&quot;=&quot;,&quot;args&quot;:[{&quot;field&quot;:&quot;author&quot;},{&quot;lit&quot;:&quot;alice&quot;}]}}&#x27;), &gt;($2, 50))])
+  LogicalTableScan(table=[[opensearch, cmts_deep]])</pre></details>
+  <details><summary>Logical plan (final, annotated with backend routing)</summary><pre>OpenSearchFilter(condition=[OR(ANNOTATED_PREDICATE(id=0, backends=[lucene, datafusion], NESTED_ANY_MATCH_EXPR($0, &#x27;{&quot;nested&quot;:&quot;replies&quot;,&quot;inner&quot;:{&quot;op&quot;:&quot;=&quot;,&quot;args&quot;:[{&quot;field&quot;:&quot;author&quot;},{&quot;lit&quot;:&quot;alice&quot;}]}}&#x27;)), ANNOTATED_PREDICATE(id=1, backends=[datafusion], &gt;($2, 50)))], viableBackends=[[datafusion]])
+  OpenSearchTableScan(table=[[cmts_deep]], viableBackends=[[lucene, datafusion]])</pre></details>
+  <div class="note-box"><b>Note.</b> FIXED (was: BUG, worse at multi-level than single-level -- a hard crash instead of a silent wrong result). Root cause was: the OR forced a fallback to the Correlate+Uncollect unnest path because one operand (views&gt;50) has no ITEM-on-array reference; at 2+ levels of nesting that fallback&#x27;s intermediate row carried a raw multi-level Struct that DataFusion&#x27;s array_element/sum had no signature for, crashing with a 500 &#x27;Internal error&#x27;. Fix: OpenSearchNestedFieldRewriter now splits a top-level OR into array-referencing and pure-parent operands (mirroring the existing AND-split), builds the array side into its own NESTED_ANY_MATCH_EXPR (correctly nesting the {&quot;nested&quot;:&quot;replies&quot;,...} wrapper for this multi-level path), and ORs it back with the parent operand(s) at the row level -- so the unnest fallback, and the crash it caused, are never reached. See RelNode (rewritten) below. Verified against real vanilla OpenSearch on the same data -- both now return the same 7 docs including P5.</div>
+</div>
+
+
+
+<div class="section-header"><h2>Existence check, multi-level <span class="badge badge-sec">1/1</span></h2></div>
+
+<div class="case-card pass">
+  <div class="case-title">#11 <span class="badge badge-pass">MATCH</span></div>
+  <p><b>PPL query:</b></p><pre>source=cmts_deep | where comments.replies.author is not null</pre>
+  
+  <div class="two-col">
+    <div><p><b>Expected (title):</b></p><div class="result-box"><code>[&quot;P1&quot;, &quot;P2&quot;, &quot;P3&quot;, &quot;P6&quot;, &quot;P7&quot;, &quot;P8&quot;]</code></div></div>
+    <div><p><b>Got (title, extracted from full row response):</b></p><div class="result-box"><code>[&quot;P1&quot;, &quot;P2&quot;, &quot;P3&quot;, &quot;P6&quot;, &quot;P7&quot;, &quot;P8&quot;]</code></div></div>
+  </div>
+  <details><summary>Got -- full row response (all columns)</summary><pre>[[[{&quot;replies&quot;: [{&quot;author&quot;: &quot;alice&quot;, &quot;score&quot;: 5}]}, {&quot;replies&quot;: [{&quot;author&quot;: &quot;bob&quot;, &quot;score&quot;: 90}]}], &quot;P1&quot;, 60], [[{&quot;replies&quot;: [{&quot;author&quot;: &quot;alice&quot;, &quot;score&quot;: 99}]}], &quot;P2&quot;, 30], [[{&quot;replies&quot;: [{&quot;author&quot;: &quot;bob&quot;, &quot;score&quot;: 10}]}, {&quot;replies&quot;: [{&quot;author&quot;: &quot;carol&quot;, &quot;score&quot;: 20}]}], &quot;P3&quot;, 70], [[{&quot;replies&quot;: [{&quot;author&quot;: &quot;alice&quot;, &quot;score&quot;: 5}]}], &quot;P6&quot;, 45], [[{&quot;replies&quot;: [{&quot;author&quot;: &quot;bob&quot;, &quot;score&quot;: 90}]}], &quot;P7&quot;, 55], [[{&quot;replies&quot;: [{&quot;author&quot;: &quot;alice&quot;, &quot;score&quot;: 5}]}, {&quot;replies&quot;: [{&quot;author&quot;: &quot;alice&quot;, &quot;score&quot;: 90}]}], &quot;P8&quot;, 80]]</pre></details>
+  <details><summary>RelNode (raw, pre-rewrite)</summary><pre>LogicalFilter(condition=[IS NOT NULL(ITEM(ITEM($0, &#x27;replies&#x27;), &#x27;author&#x27;))])
+  LogicalTableScan(table=[[opensearch, cmts_deep]])</pre></details>
+  <details><summary>RelNode (rewritten, post nested-field-rewrite)</summary><pre>LogicalFilter(condition=[NESTED_ANY_MATCH_EXPR($0, &#x27;{&quot;nested&quot;:&quot;replies&quot;,&quot;inner&quot;:{&quot;op&quot;:&quot;EXISTS&quot;,&quot;args&quot;:[{&quot;field&quot;:&quot;author&quot;}]}}&#x27;)])
+  LogicalTableScan(table=[[opensearch, cmts_deep]])</pre></details>
+  <details><summary>Logical plan (final, annotated with backend routing)</summary><pre>OpenSearchFilter(condition=[ANNOTATED_PREDICATE(id=0, backends=[datafusion], NESTED_ANY_MATCH_EXPR($0, &#x27;{&quot;nested&quot;:&quot;replies&quot;,&quot;inner&quot;:{&quot;op&quot;:&quot;EXISTS&quot;,&quot;args&quot;:[{&quot;field&quot;:&quot;author&quot;}]}}&#x27;))], viableBackends=[[datafusion]])
+  OpenSearchTableScan(table=[[cmts_deep]], viableBackends=[[lucene, datafusion]])</pre></details>
+  
+</div>
+
+
+
+<div class="section-header"><h2>Aggregation -- parent doc id, multi-level <span class="badge badge-sec">1/1</span></h2></div>
+
+<div class="case-card pass">
+  <div class="case-title">#12 <span class="badge badge-pass">MATCH</span></div>
+  <p><b>PPL query:</b></p><pre>source=cmts_deep | where comments.replies.author = &quot;alice&quot; | stats count() by title</pre>
+  
+  <div class="two-col">
+    <div><p><b>Expected (title):</b></p><div class="result-box"><code>[[1, &quot;P1&quot;], [1, &quot;P2&quot;], [1, &quot;P6&quot;], [1, &quot;P8&quot;]]</code></div></div>
+    <div><p><b>Got (title, extracted from full row response):</b></p><div class="result-box"><code>[[1, &quot;P1&quot;], [1, &quot;P2&quot;], [1, &quot;P6&quot;], [1, &quot;P8&quot;]]</code></div></div>
+  </div>
+  <details><summary>Got -- full row response (all columns)</summary><pre>[[1, &quot;P1&quot;], [1, &quot;P2&quot;], [1, &quot;P6&quot;], [1, &quot;P8&quot;]]</pre></details>
+  <details><summary>RelNode (raw, pre-rewrite)</summary><pre>LogicalProject(count()=[$1], title=[$0])
+  LogicalAggregate(group=[{0}], count()=[COUNT()])
+    LogicalProject(title=[$1])
+      LogicalFilter(condition=[=(ITEM(ITEM($0, &#x27;replies&#x27;), &#x27;author&#x27;), &#x27;alice&#x27;)])
+        LogicalTableScan(table=[[opensearch, cmts_deep]])</pre></details>
+  <details><summary>RelNode (rewritten, post nested-field-rewrite)</summary><pre>LogicalProject(count()=[$1], title=[$0])
+  LogicalAggregate(group=[{0}], count()=[COUNT()])
+    LogicalProject(title=[$1])
+      LogicalFilter(condition=[NESTED_ANY_MATCH_EXPR($0, &#x27;{&quot;nested&quot;:&quot;replies&quot;,&quot;inner&quot;:{&quot;op&quot;:&quot;=&quot;,&quot;args&quot;:[{&quot;field&quot;:&quot;author&quot;},{&quot;lit&quot;:&quot;alice&quot;}]}}&#x27;)])
+        LogicalTableScan(table=[[opensearch, cmts_deep]])</pre></details>
+  <details><summary>Logical plan (final, annotated with backend routing)</summary><pre>OpenSearchProject(count()=[$1], title=[$0], viableBackends=[[lucene, datafusion]])
+  OpenSearchAggregate(group=[{0}], count()=[COUNT()], mode=[SINGLE], viableBackends=[[lucene, datafusion]])
+    OpenSearchProject(title=[$1], viableBackends=[[lucene, datafusion]])
+      OpenSearchFilter(condition=[ANNOTATED_PREDICATE(id=0, backends=[lucene, datafusion], NESTED_ANY_MATCH_EXPR($0, &#x27;{&quot;nested&quot;:&quot;replies&quot;,&quot;inner&quot;:{&quot;op&quot;:&quot;=&quot;,&quot;args&quot;:[{&quot;field&quot;:&quot;author&quot;},{&quot;lit&quot;:&quot;alice&quot;}]}}&#x27;))], viableBackends=[[lucene, datafusion]])
+        OpenSearchTableScan(table=[[cmts_deep]], viableBackends=[[lucene, datafusion]])</pre></details>
+  
+</div>
+
+
+
+<div class="section-header"><h2>Aggregation -- nested field (group by), multi-level <span class="badge badge-sec">1/1</span></h2></div>
+
+<div class="case-card pass">
+  <div class="case-title">#13 <span class="badge badge-pass">MATCH</span></div>
+  <p><b>PPL query:</b></p><pre>source=cmts_deep | stats count() by comments.replies.author</pre>
+  
+  <div class="two-col">
+    <div><p><b>Expected (title):</b></p><div class="result-box"><code>[[5, &quot;alice&quot;], [3, &quot;bob&quot;], [1, &quot;carol&quot;]]</code></div></div>
+    <div><p><b>Got (title, extracted from full row response):</b></p><div class="result-box"><code>[[1, &quot;carol&quot;], [3, &quot;bob&quot;], [5, &quot;alice&quot;]]</code></div></div>
+  </div>
+  <details><summary>Got -- full row response (all columns)</summary><pre>[[1, &quot;carol&quot;], [3, &quot;bob&quot;], [5, &quot;alice&quot;]]</pre></details>
+  <details><summary>RelNode (raw, pre-rewrite)</summary><pre>LogicalProject(count()=[$1], comments.replies.author=[$0])
+  LogicalAggregate(group=[{0}], count()=[COUNT()])
+    LogicalProject(comments.replies.author=[ITEM(ITEM($0, &#x27;replies&#x27;), &#x27;author&#x27;)])
+      LogicalTableScan(table=[[opensearch, cmts_deep]])</pre></details>
+  <details><summary>RelNode (rewritten, post nested-field-rewrite)</summary><pre>LogicalProject(count()=[$1], comments.replies.author=[$0])
+  LogicalAggregate(group=[{0}], count()=[COUNT()])
+    LogicalProject(comments.replies.author=[ITEM(ITEM($3, 1), &#x27;author&#x27;)])
+      LogicalNestedScope(path=[comments])
+        LogicalTableScan(table=[[opensearch, cmts_deep]])</pre></details>
+  <details><summary>Logical plan (final, annotated with backend routing)</summary><pre>OpenSearchExchangeReducer(viableBackends=[[datafusion]], exchange=[ExchangeInfo[distributionType=SINGLETON, partitionKeyIndices=[]]])
+  OpenSearchProject(count()=[$1], comments.replies.author=[$0], viableBackends=[[datafusion]])
+    OpenSearchAggregate(group=[{0}], count()=[COUNT()], mode=[SINGLE], viableBackends=[[datafusion]])
+      OpenSearchProject(comments.replies.author=[ANNOTATED_PROJECT_EXPR(id=1, backends=[datafusion], ITEM(ANNOTATED_PROJECT_EXPR(id=0, backends=[datafusion], ITEM($3, 1)), &#x27;author&#x27;))], viableBackends=[[datafusion]])
+        OpenSearchNestedScope(path=[comments], viableBackends=[[datafusion]])
+          OpenSearchTableScan(table=[[cmts_deep]], viableBackends=[[lucene, datafusion]])</pre></details>
+  
+</div>
+
+
+
+<div class="section-header"><h2>Aggregation -- nested field (metric only), multi-level <span class="badge badge-sec">1/1</span></h2></div>
+
+<div class="case-card pass">
+  <div class="case-title">#14 <span class="badge badge-pass">MATCH</span></div>
+  <p><b>PPL query:</b></p><pre>source=cmts_deep | stats avg(comments.replies.score)</pre>
+  
+  <div class="two-col">
+    <div><p><b>Expected (title):</b></p><div class="result-box"><code>[[46.0]]</code></div></div>
+    <div><p><b>Got (title, extracted from full row response):</b></p><div class="result-box"><code>[[46.0]]</code></div></div>
+  </div>
+  <details><summary>Got -- full row response (all columns)</summary><pre>[[46.0]]</pre></details>
+  <details><summary>RelNode (raw, pre-rewrite)</summary><pre>LogicalAggregate(group=[{}], avg(comments.replies.score)=[AVG($0)])
+  LogicalProject($f1=[ITEM(ITEM($0, &#x27;replies&#x27;), &#x27;score&#x27;)])
+    LogicalTableScan(table=[[opensearch, cmts_deep]])</pre></details>
+  <details><summary>RelNode (rewritten, post nested-field-rewrite)</summary><pre>LogicalProject(avg(comments.replies.score)=[/(CAST($0):DOUBLE, $1)])
+  LogicalAggregate(group=[{}], agg#0=[SUM($0)], agg#1=[COUNT($0)])
+    LogicalProject($f1=[ITEM(ITEM($3, 1), &#x27;score&#x27;)])
+      LogicalNestedScope(path=[comments])
+        LogicalTableScan(table=[[opensearch, cmts_deep]])</pre></details>
+  <details><summary>Logical plan (final, annotated with backend routing)</summary><pre>OpenSearchExchangeReducer(viableBackends=[[datafusion]], exchange=[ExchangeInfo[distributionType=SINGLETON, partitionKeyIndices=[]]])
+  OpenSearchProject(avg(comments.replies.score)=[ANNOTATED_PROJECT_EXPR(id=5, backends=[datafusion], /(ANNOTATED_PROJECT_EXPR(id=4, backends=[datafusion], CAST($0):DOUBLE), $1))], viableBackends=[[datafusion]])
+    OpenSearchAggregate(group=[{}], agg#0=[SUM($0)], agg#1=[COUNT($0)], mode=[SINGLE], viableBackends=[[datafusion]])
+      OpenSearchProject($f1=[ANNOTATED_PROJECT_EXPR(id=1, backends=[datafusion], ITEM(ANNOTATED_PROJECT_EXPR(id=0, backends=[datafusion], ITEM($3, 1)), &#x27;score&#x27;))], viableBackends=[[datafusion]])
+        OpenSearchNestedScope(path=[comments], viableBackends=[[datafusion]])
+          OpenSearchTableScan(table=[[cmts_deep]], viableBackends=[[lucene, datafusion]])</pre></details>
+  
+</div>
+
+
+
+<div class="section-header"><h2>Aggregation -- nested field (metric + group by), multi-level <span class="badge badge-sec">1/1</span></h2></div>
+
+<div class="case-card pass">
+  <div class="case-title">#15 <span class="badge badge-pass">MATCH</span></div>
+  <p><b>PPL query:</b></p><pre>source=cmts_deep | stats avg(comments.replies.score) by comments.replies.author</pre>
+  
+  <div class="two-col">
+    <div><p><b>Expected (title):</b></p><div class="result-box"><code>[[40.8, &quot;alice&quot;], [63.333333333333336, &quot;bob&quot;], [20.0, &quot;carol&quot;]]</code></div></div>
+    <div><p><b>Got (title, extracted from full row response):</b></p><div class="result-box"><code>[[63.333333333333336, &quot;bob&quot;], [20.0, &quot;carol&quot;], [40.8, &quot;alice&quot;]]</code></div></div>
+  </div>
+  <details><summary>Got -- full row response (all columns)</summary><pre>[[63.333333333333336, &quot;bob&quot;], [20.0, &quot;carol&quot;], [40.8, &quot;alice&quot;]]</pre></details>
+  <details><summary>RelNode (raw, pre-rewrite)</summary><pre>LogicalProject(avg(comments.replies.score)=[$1], comments.replies.author=[$0])
+  LogicalAggregate(group=[{0}], avg(comments.replies.score)=[AVG($1)])
+    LogicalProject(comments.replies.author=[ITEM(ITEM($0, &#x27;replies&#x27;), &#x27;author&#x27;)], $f3=[ITEM(ITEM($0, &#x27;replies&#x27;), &#x27;score&#x27;)])
+      LogicalTableScan(table=[[opensearch, cmts_deep]])</pre></details>
+  <details><summary>RelNode (rewritten, post nested-field-rewrite)</summary><pre>LogicalProject(avg(comments.replies.score)=[$1], comments.replies.author=[$0])
+  LogicalProject(comments.replies.author=[$0], avg(comments.replies.score)=[/(CAST($1):DOUBLE, $2)])
+    LogicalAggregate(group=[{0}], agg#0=[SUM($1)], agg#1=[COUNT($1)])
+      LogicalProject(comments.replies.author=[ITEM(ITEM($3, 1), &#x27;author&#x27;)], $f3=[ITEM(ITEM($3, 1), &#x27;score&#x27;)])
+        LogicalNestedScope(path=[comments])
+          LogicalTableScan(table=[[opensearch, cmts_deep]])</pre></details>
+  <details><summary>Logical plan (final, annotated with backend routing)</summary><pre>OpenSearchExchangeReducer(viableBackends=[[datafusion]], exchange=[ExchangeInfo[distributionType=SINGLETON, partitionKeyIndices=[]]])
+  OpenSearchProject(avg(comments.replies.score)=[$1], comments.replies.author=[$0], viableBackends=[[datafusion]])
+    OpenSearchProject(comments.replies.author=[$0], avg(comments.replies.score)=[ANNOTATED_PROJECT_EXPR(id=7, backends=[datafusion], /(ANNOTATED_PROJECT_EXPR(id=6, backends=[datafusion], CAST($1):DOUBLE), $2))], viableBackends=[[datafusion]])
+      OpenSearchAggregate(group=[{0}], agg#0=[SUM($1)], agg#1=[COUNT($1)], mode=[SINGLE], viableBackends=[[datafusion]])
+        OpenSearchProject(comments.replies.author=[ANNOTATED_PROJECT_EXPR(id=1, backends=[datafusion], ITEM(ANNOTATED_PROJECT_EXPR(id=0, backends=[datafusion], ITEM($3, 1)), &#x27;author&#x27;))], $f3=[ANNOTATED_PROJECT_EXPR(id=3, backends=[datafusion], ITEM(ANNOTATED_PROJECT_EXPR(id=2, backends=[datafusion], ITEM($3, 1)), &#x27;score&#x27;))], viableBackends=[[datafusion]])
+          OpenSearchNestedScope(path=[comments], viableBackends=[[datafusion]])
+            OpenSearchTableScan(table=[[cmts_deep]], viableBackends=[[lucene, datafusion]])</pre></details>
+  
+</div>
+
+
+
+<div class="section-header"><h2>Aggregation -- nested field, multi-level (group by) (c3, unchanged) <span class="badge badge-sec">1/1</span></h2></div>
+
+<div class="case-card pass">
+  <div class="case-title">#16 <span class="badge badge-pass">MATCH</span></div>
+  <p><b>PPL query:</b></p><pre>source=c3 | stats count() by products.variants.color</pre>
+  
+  <div class="two-col">
+    <div><p><b>Expected (title):</b></p><div class="result-box"><code>[[4, &quot;red&quot;], [1, &quot;blue&quot;]]</code></div></div>
+    <div><p><b>Got (title, extracted from full row response):</b></p><div class="result-box"><code>[[4, &quot;red&quot;], [1, &quot;blue&quot;]]</code></div></div>
+  </div>
+  <details><summary>Got -- full row response (all columns)</summary><pre>[[4, &quot;red&quot;], [1, &quot;blue&quot;]]</pre></details>
+  <details><summary>RelNode (raw, pre-rewrite)</summary><pre>LogicalProject(count()=[$1], products.variants.color=[$0])
+  LogicalAggregate(group=[{0}], count()=[COUNT()])
+    LogicalProject(products.variants.color=[ITEM(ITEM($0, &#x27;variants&#x27;), &#x27;color&#x27;)])
+      LogicalTableScan(table=[[opensearch, c3]])</pre></details>
+  <details><summary>RelNode (rewritten, post nested-field-rewrite)</summary><pre>LogicalProject(count()=[$1], products.variants.color=[$0])
+  LogicalAggregate(group=[{0}], count()=[COUNT()])
+    LogicalProject(products.variants.color=[ITEM(ITEM($3, 1), &#x27;color&#x27;)])
+      LogicalNestedScope(path=[products])
+        LogicalTableScan(table=[[opensearch, c3]])</pre></details>
+  <details><summary>Logical plan (final, annotated with backend routing)</summary><pre>OpenSearchExchangeReducer(viableBackends=[[datafusion]], exchange=[ExchangeInfo[distributionType=SINGLETON, partitionKeyIndices=[]]])
+  OpenSearchProject(count()=[$1], products.variants.color=[$0], viableBackends=[[datafusion]])
+    OpenSearchAggregate(group=[{0}], count()=[COUNT()], mode=[SINGLE], viableBackends=[[datafusion]])
+      OpenSearchProject(products.variants.color=[ANNOTATED_PROJECT_EXPR(id=1, backends=[datafusion], ITEM(ANNOTATED_PROJECT_EXPR(id=0, backends=[datafusion], ITEM($3, 1)), &#x27;color&#x27;))], viableBackends=[[datafusion]])
+        OpenSearchNestedScope(path=[products], viableBackends=[[datafusion]])
+          OpenSearchTableScan(table=[[c3]], viableBackends=[[lucene, datafusion]])</pre></details>
+  
+</div>
+
+
+
+<div class="section-header"><h2>Aggregation -- nested field, multi-level (metric only) (c3, unchanged) <span class="badge badge-sec">1/1</span></h2></div>
+
+<div class="case-card pass">
+  <div class="case-title">#17 <span class="badge badge-pass">MATCH</span></div>
+  <p><b>PPL query:</b></p><pre>source=c3 | stats avg(products.variants.price)</pre>
+  
+  <div class="two-col">
+    <div><p><b>Expected (title):</b></p><div class="result-box"><code>[[114.0]]</code></div></div>
+    <div><p><b>Got (title, extracted from full row response):</b></p><div class="result-box"><code>[[114.0]]</code></div></div>
+  </div>
+  <details><summary>Got -- full row response (all columns)</summary><pre>[[114.0]]</pre></details>
+  <details><summary>RelNode (raw, pre-rewrite)</summary><pre>LogicalAggregate(group=[{}], avg(products.variants.price)=[AVG($0)])
+  LogicalProject($f1=[ITEM(ITEM($0, &#x27;variants&#x27;), &#x27;price&#x27;)])
+    LogicalTableScan(table=[[opensearch, c3]])</pre></details>
+  <details><summary>RelNode (rewritten, post nested-field-rewrite)</summary><pre>LogicalProject(avg(products.variants.price)=[/(CAST($0):DOUBLE, $1)])
+  LogicalAggregate(group=[{}], agg#0=[SUM($0)], agg#1=[COUNT($0)])
+    LogicalProject($f1=[ITEM(ITEM($3, 1), &#x27;price&#x27;)])
+      LogicalNestedScope(path=[products])
+        LogicalTableScan(table=[[opensearch, c3]])</pre></details>
+  <details><summary>Logical plan (final, annotated with backend routing)</summary><pre>OpenSearchExchangeReducer(viableBackends=[[datafusion]], exchange=[ExchangeInfo[distributionType=SINGLETON, partitionKeyIndices=[]]])
+  OpenSearchProject(avg(products.variants.price)=[ANNOTATED_PROJECT_EXPR(id=5, backends=[datafusion], /(ANNOTATED_PROJECT_EXPR(id=4, backends=[datafusion], CAST($0):DOUBLE), $1))], viableBackends=[[datafusion]])
+    OpenSearchAggregate(group=[{}], agg#0=[SUM($0)], agg#1=[COUNT($0)], mode=[SINGLE], viableBackends=[[datafusion]])
+      OpenSearchProject($f1=[ANNOTATED_PROJECT_EXPR(id=1, backends=[datafusion], ITEM(ANNOTATED_PROJECT_EXPR(id=0, backends=[datafusion], ITEM($3, 1)), &#x27;price&#x27;))], viableBackends=[[datafusion]])
+        OpenSearchNestedScope(path=[products], viableBackends=[[datafusion]])
+          OpenSearchTableScan(table=[[c3]], viableBackends=[[lucene, datafusion]])</pre></details>
+  
+</div>
+
+
+
+<div class="section-header"><h2>Ambiguous nested-name resolution (unchanged) <span class="badge badge-sec">2/2</span></h2></div>
+
+<div class="case-card pass">
+  <div class="case-title">#18 <span class="badge badge-pass">MATCH</span></div>
+  <p><b>PPL query:</b></p><pre>source=ambig | where region.team.name = &quot;Tigers&quot;</pre>
+  
+  <div class="two-col">
+    <div><p><b>Expected (title):</b></p><div class="result-box"><code>[&quot;Acme Sports Network&quot;]</code></div></div>
+    <div><p><b>Got (title, extracted from full row response):</b></p><div class="result-box"><code>[&quot;Acme Sports Network&quot;]</code></div></div>
+  </div>
+  <details><summary>Got -- full row response (all columns)</summary><pre>[[[{&quot;team&quot;: [{&quot;name&quot;: &quot;Tigers&quot;, &quot;player&quot;: [{&quot;name&quot;: &quot;Eagle&quot;}]}]}], &quot;Acme Sports Network&quot;]]</pre></details>
+  <details><summary>RelNode (raw, pre-rewrite)</summary><pre>LogicalFilter(condition=[=(ITEM(ITEM($0, &#x27;team&#x27;), &#x27;name&#x27;), &#x27;Tigers&#x27;)])
+  LogicalTableScan(table=[[opensearch, ambig]])</pre></details>
+  <details><summary>RelNode (rewritten, post nested-field-rewrite)</summary><pre>LogicalFilter(condition=[NESTED_ANY_MATCH_EXPR($0, &#x27;{&quot;nested&quot;:&quot;team&quot;,&quot;inner&quot;:{&quot;op&quot;:&quot;=&quot;,&quot;args&quot;:[{&quot;field&quot;:&quot;name&quot;},{&quot;lit&quot;:&quot;Tigers&quot;}]}}&#x27;)])
+  LogicalTableScan(table=[[opensearch, ambig]])</pre></details>
+  <details><summary>Logical plan (final, annotated with backend routing)</summary><pre>OpenSearchFilter(condition=[ANNOTATED_PREDICATE(id=0, backends=[lucene, datafusion], NESTED_ANY_MATCH_EXPR($0, &#x27;{&quot;nested&quot;:&quot;team&quot;,&quot;inner&quot;:{&quot;op&quot;:&quot;=&quot;,&quot;args&quot;:[{&quot;field&quot;:&quot;name&quot;},{&quot;lit&quot;:&quot;Tigers&quot;}]}}&#x27;))], viableBackends=[[lucene, datafusion]])
+  OpenSearchTableScan(table=[[ambig]], viableBackends=[[lucene, datafusion]])</pre></details>
+  <div class="note-box"><b>Note.</b> Shallow occurrence of leaf “name” (a TEAM&#x27;s own name, directly under region.team). Must resolve to Acme only -- Metro&#x27;s PLAYER is also named “Tigers” one level deeper (region.team.player.name), so any depth-confusion in the resolver would wrongly leak Metro in here.</div>
+</div>
+
+
+<div class="case-card pass">
+  <div class="case-title">#18a <span class="badge badge-pass">MATCH</span></div>
+  <p><b>PPL query:</b></p><pre>source=ambig | where region.team.player.name = &quot;Tigers&quot;</pre>
+  
+  <div class="two-col">
+    <div><p><b>Expected (title):</b></p><div class="result-box"><code>[&quot;Metro Sports Group&quot;]</code></div></div>
+    <div><p><b>Got (title, extracted from full row response):</b></p><div class="result-box"><code>[&quot;Metro Sports Group&quot;]</code></div></div>
+  </div>
+  <details><summary>Got -- full row response (all columns)</summary><pre>[[[{&quot;team&quot;: [{&quot;name&quot;: &quot;Eagle&quot;, &quot;player&quot;: [{&quot;name&quot;: &quot;Tigers&quot;}]}]}], &quot;Metro Sports Group&quot;]]</pre></details>
+  <details><summary>RelNode (raw, pre-rewrite)</summary><pre>LogicalFilter(condition=[=(ITEM(ITEM(ITEM($0, &#x27;team&#x27;), &#x27;player&#x27;), &#x27;name&#x27;), &#x27;Tigers&#x27;)])
+  LogicalTableScan(table=[[opensearch, ambig]])</pre></details>
+  <details><summary>RelNode (rewritten, post nested-field-rewrite)</summary><pre>LogicalFilter(condition=[NESTED_ANY_MATCH_EXPR($0, &#x27;{&quot;nested&quot;:&quot;team&quot;,&quot;inner&quot;:{&quot;nested&quot;:&quot;player&quot;,&quot;inner&quot;:{&quot;op&quot;:&quot;=&quot;,&quot;args&quot;:[{&quot;field&quot;:&quot;name&quot;},{&quot;lit&quot;:&quot;Tigers&quot;}]}}}&#x27;)])
+  LogicalTableScan(table=[[opensearch, ambig]])</pre></details>
+  <details><summary>Logical plan (final, annotated with backend routing)</summary><pre>OpenSearchFilter(condition=[ANNOTATED_PREDICATE(id=0, backends=[lucene, datafusion], NESTED_ANY_MATCH_EXPR($0, &#x27;{&quot;nested&quot;:&quot;team&quot;,&quot;inner&quot;:{&quot;nested&quot;:&quot;player&quot;,&quot;inner&quot;:{&quot;op&quot;:&quot;=&quot;,&quot;args&quot;:[{&quot;field&quot;:&quot;name&quot;},{&quot;lit&quot;:&quot;Tigers&quot;}]}}}&#x27;))], viableBackends=[[lucene, datafusion]])
+  OpenSearchTableScan(table=[[ambig]], viableBackends=[[lucene, datafusion]])</pre></details>
+  <div class="note-box"><b>Note.</b> Deep occurrence of leaf “name” (a PLAYER&#x27;s name, under sibling nested region.team.player). Must resolve to Metro only, independently of 18&#x27;s shallow team-name “Tigers” (Acme&#x27;s team, not Metro&#x27;s player).</div>
+</div>
+
+
+</body></html>
