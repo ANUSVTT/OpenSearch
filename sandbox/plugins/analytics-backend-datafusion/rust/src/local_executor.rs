@@ -44,6 +44,7 @@ use prost::Message;
 use substrait::proto::Plan;
 
 use crate::partition_stream::{channel, PartitionStreamSender, SingleReceiverPartition};
+use crate::unnest_consumer::from_substrait_plan_unnest_aware;
 
 /// Coordinator-reduce DataFusion session.
 ///
@@ -203,7 +204,7 @@ impl LocalSession {
         let plan = Plan::decode(bytes).map_err(|e| {
             DataFusionError::Execution(format!("Failed to decode Substrait plan: {}", e))
         })?;
-        let logical_plan = from_substrait_plan(&self.ctx.state(), &plan).await?;
+        let logical_plan = from_substrait_plan_unnest_aware(&self.ctx.state(), &plan).await?;
         log_debug!(
             "DataFusion logical plan:\n{}",
             logical_plan.display_indent()
@@ -248,7 +249,7 @@ impl LocalSession {
                 e
             ))
         })?;
-        let logical_plan = from_substrait_plan(&self.ctx.state(), &plan).await?;
+        let logical_plan = from_substrait_plan_unnest_aware(&self.ctx.state(), &plan).await?;
         let dataframe = self.ctx.execute_logical_plan(logical_plan).await?;
         let physical_plan = dataframe.create_physical_plan().await?;
         // Strip first so `force_aggregate_mode(Final)` can find the Final/Partial pair

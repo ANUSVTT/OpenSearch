@@ -115,6 +115,13 @@ public class DataFusionFragmentConvertor implements FragmentConvertor {
         FunctionMappings.s(DelegatedPredicateFunction.FUNCTION, DelegatedPredicateFunction.NAME),
         FunctionMappings.s(AggregateFunction.REDUCE_EVAL_OP, "reduce_eval"),
         FunctionMappings.s(DelegationPossibleFunction.FUNCTION, DelegationPossibleFunction.NAME),
+        // NESTED_ANY_MATCH_EXPR(nestedCol, jsonTree): the single nested predicate the rewriter emits for ANY
+        // shape on a nested array (a lone equality leaf, a compound tree, or a deep descent). It is dual-viable
+        // [lucene, datafusion] — keyword-equality shapes performance-delegate to Lucene's native block-join
+        // (via NestedAnyMatchExprSerializer), numeric/range shapes evaluate on the nested_any_match_expr Rust
+        // UDF — and stays in the Substrait plan either way, so it needs a name mapping to round-trip through
+        // isthmus. Whether Lucene is viable for a given call is decided per-instance by canServe.
+        FunctionMappings.s(org.opensearch.analytics.planner.rules.OpenSearchNestedFieldRewriter.NESTED_ANY_MATCH_EXPR_OP, "nested_any_match_expr"),
         FunctionMappings.s(SqlStdOperatorTable.ASCII, "ascii"),
         FunctionMappings.s(SqlStdOperatorTable.CHAR_LENGTH, "length"),
         FunctionMappings.s(SqlLibraryOperators.CONCAT_FUNCTION, "concat"),
@@ -207,6 +214,7 @@ public class DataFusionFragmentConvertor implements FragmentConvertor {
         FunctionMappings.s(MakeArrayAdapter.LOCAL_MAKE_ARRAY_OP, "make_array"),
         FunctionMappings.s(ArrayToStringAdapter.LOCAL_ARRAY_TO_STRING_OP, "array_to_string"),
         FunctionMappings.s(ArrayElementAdapter.LOCAL_ARRAY_ELEMENT_OP, "array_element"),
+        FunctionMappings.s(ArrayElementAdapter.LOCAL_GET_FIELD_OP, "get_field"),
         FunctionMappings.s(ArrayElementAdapter.LOCAL_MAP_EXTRACT_OP, "map_extract"),
         FunctionMappings.s(MvzipAdapter.LOCAL_MVZIP_OP, "mvzip"),
         FunctionMappings.s(MvfindAdapter.LOCAL_MVFIND_OP, "mvfind"),
@@ -569,7 +577,15 @@ public class DataFusionFragmentConvertor implements FragmentConvertor {
             throw new IllegalStateException("Substrait conversion rejected the plan: " + e.getMessage(), e);
         }
 
-        List<String> fieldNames = root.fields.stream().map(field -> field.getValue()).toList();
+        // Substrait's Root.names is a DEPTH-FIRST FLATTENED list: one entry per top-level output column PLUS
+        // an entry for every inner struct-child field. root.fields gives only the top-level column names, which
+        // is correct for scalar rows but SHORT when a column is an ARRAY(ROW(...)) (a nested column) — the
+        // DataFusion substrait consumer (rename_data_type) walks the schema depth-first and throws "Named schema
+        // must contain names for all fields" when it runs out of names inside the struct. flattenOutputNames adds
+        // the inner names from the Calcite type; for scalar-only rows it returns exactly the top-level list, so
+        // the working (count / flat-projection) paths are unchanged.
+        List<String> topLevelNames = root.fields.stream().map(field -> field.getValue()).toList();
+        List<String> fieldNames = flattenOutputNames(topLevelNames, root.validatedRowType);
 
         Plan.Root substraitRoot = Plan.Root.builder().input(substraitRel).names(fieldNames).build();
         Plan plan = Plan.builder().addRoots(substraitRoot).build();
@@ -580,6 +596,41 @@ public class DataFusionFragmentConvertor implements FragmentConvertor {
         byte[] bytes = protoPlan.toByteArray();
         LOGGER.debug("Substrait plan: {} bytes", bytes.length);
         return bytes;
+    }
+
+    /**
+     * Builds the DEPTH-FIRST FLATTENED name list Substrait's {@code Root.names} requires: one name per
+     * top-level output column, and — for any column whose type is (or contains) a {@code ROW} — the name of
+     * every inner struct child, recursively. Top-level names come from {@code topLevelNames} (so projection
+     * aliasing is preserved); nested child names come from the Calcite {@code rowType}. A scalar-only row
+     * returns exactly {@code topLevelNames}, so non-nested queries are unaffected.
+     */
+    private static List<String> flattenOutputNames(List<String> topLevelNames, RelDataType rowType) {
+        List<RelDataTypeField> fields = rowType.getFieldList();
+        List<String> out = new ArrayList<>();
+        for (int i = 0; i < fields.size(); i++) {
+            String name = i < topLevelNames.size() ? topLevelNames.get(i) : fields.get(i).getName();
+            out.add(name);
+            appendNestedNames(fields.get(i).getType(), out);
+        }
+        return out;
+    }
+
+    /**
+     * Appends the flattened inner field names of {@code type} to {@code out}. An ARRAY/MULTISET contributes NO
+     * name for the collection itself and recurses into its element type; a ROW emits each child's name then
+     * recurses into that child's type (so nested-in-nested and object sub-fields are covered). Scalars add
+     * nothing. Mirrors how the DataFusion substrait consumer walks the schema depth-first.
+     */
+    private static void appendNestedNames(RelDataType type, List<String> out) {
+        if (type.getComponentType() != null) {
+            appendNestedNames(type.getComponentType(), out);
+        } else if (type.isStruct()) {
+            for (RelDataTypeField child : type.getFieldList()) {
+                out.add(child.getName());
+                appendNestedNames(child.getType(), out);
+            }
+        }
     }
 
     /** Converts a single operator into a Substrait {@link Rel}; children are discarded and rewired by {@link #rewire}. */
@@ -777,7 +828,58 @@ public class DataFusionFragmentConvertor implements FragmentConvertor {
                 Rel rel = super.visit(aggregate);
                 return rel instanceof Aggregate agg ? addNullArgFilters(aggregate, agg) : rel;
             }
+
+            @Override
+            public Rel visit(org.apache.calcite.rel.core.Correlate correlate) {
+                // [NESTED] The generic nested rewrite injects Correlate(left, Uncollect(...)) to mean
+                // UNNEST(left.arrayColumn). isthmus's default would emit this as a JOIN (wrong — a join
+                // is not an unnest). Intercept it: emit an ExtensionSingle carrying "unnest_reshape:<col>"
+                // over the converted LEFT input; the Rust consumer rebuilds LogicalPlan::Unnest reshaped
+                // to this correlate's (Calcite append) row type, so field indices above line up. Every
+                // other rel (Filter/Aggregate/GroupBy/Having/Sort/Project) flows through isthmus as usual.
+                Rel unnest = tryEmitUnnest(correlate, this);
+                return unnest != null ? unnest : super.visit(correlate);
+            }
         };
+    }
+
+    /**
+     * If {@code correlate} is the {@code Correlate(left, Uncollect(project($cor.arrayCol)))} shape the
+     * nested rewrite injects, emit it as an {@code ExtensionSingle(unnest_reshape:<arrayColName>)} over
+     * the converted left input; otherwise return {@code null} (a genuine correlated join). The unnest
+     * path is the dotted name of the left column named by {@code requiredColumns}; the extension rel's
+     * record type is this correlate's Calcite row type (originals + appended struct fields), which the
+     * Rust reshape reproduces.
+     */
+    private static io.substrait.relation.Rel tryEmitUnnest(org.apache.calcite.rel.core.Correlate correlate, SubstraitRelVisitor visitor) {
+        RelNode right = stripHep(correlate.getRight());
+        if (!(right instanceof org.apache.calcite.rel.core.Uncollect)) {
+            return null; // not our injected unnest — a real correlated join
+        }
+        RelNode left = correlate.getLeft();
+        org.apache.calcite.util.ImmutableBitSet required = correlate.getRequiredColumns();
+        if (required.cardinality() != 1) {
+            return null;
+        }
+        int arrayColIdx = required.nth(0);
+        String arrayColName = left.getRowType().getFieldList().get(arrayColIdx).getName();
+
+        io.substrait.relation.Rel leftRel = visitor.apply(left);
+        Type.Struct recordType = TypeConverter.DEFAULT.toNamedStruct(correlate.getRowType()).struct();
+        // [NESTED] The Calcite post-unnest width (Correlate row-type field count) is the single source of
+        // truth for where a physical __row_id__ lands after the reshape reorders it to the tail.
+        int postUnnestWidth = correlate.getRowType().getFieldCount();
+        UnnestExtensionDetail detail = new UnnestExtensionDetail(arrayColName, recordType, postUnnestWidth);
+        // Grep: unnest_reshape — the signal the differential harness greps to verify the generic path fired.
+        LOGGER.info("[NESTED] emitting generic unnest ExtensionSingleRel: unnest_reshape:{}|w={}", arrayColName, postUnnestWidth);
+        // isthmus's ExtensionSingle immutable has a MANDATORY deriveRecordType (post-unnest output row type),
+        // separate from the detail's own deriveRecordType(Rel). Both carry the Calcite Correlate row type.
+        return io.substrait.relation.ExtensionSingle.builder().input(leftRel).detail(detail).deriveRecordType(recordType).build();
+    }
+
+    /** Unwrap a Calcite HepRelVertex so instanceof checks see the real rel. */
+    private static RelNode stripHep(RelNode node) {
+        return node instanceof org.apache.calcite.plan.hep.HepRelVertex v ? v.getCurrentRel() : node;
     }
 
     /**

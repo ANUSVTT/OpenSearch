@@ -22,5 +22,11 @@ package org.opensearch.analytics.spi;
 public enum EngineCapability {
     SORT,
     UNION,
-    VALUES
+    VALUES,
+    /**
+     * Backend-neutral nested UNNEST/expand operator ({@code LogicalNestedScope} / {@code OpenSearchNestedScope}):
+     * explode a nested {@code ARRAY(ROW)} column into per-element rows so downstream operators see flat columns.
+     * A non-empty declaration means the backend can execute the nested-scope expand path.
+     */
+    NESTED_SCOPE
 }

@@ -1601,8 +1601,11 @@ fn derive_schema_from_partial_plan(
     use datafusion::prelude::SessionContext;
     use datafusion_substrait::extensions::Extensions;
     use datafusion_substrait::logical_plan::consumer::{
-        from_substrait_named_struct, from_substrait_plan, DefaultSubstraitConsumer,
+        from_substrait_named_struct, DefaultSubstraitConsumer,
     };
+    // [NESTED] The reduce leaf may carry our `unnest_reshape:` ExtensionSingle; deserialize with the
+    // unnest-aware entry so schema derivation understands it (stock from_substrait_plan does not).
+    use crate::unnest_consumer::from_substrait_plan_unnest_aware as from_substrait_plan;
     use prost::Message;
     use substrait::proto::{read_rel::ReadType, Plan};
 
@@ -1689,7 +1692,7 @@ fn derive_schema_from_partial_plan(
         })
         .unwrap_or_default();
 
-    let logical_plan = futures::executor::block_on(from_substrait_plan(&session_state, &plan))?;
+    let logical_plan = futures::executor::block_on(crate::unnest_consumer::from_substrait_plan_unnest_aware(&session_state, &plan))?;
     let physical_plan =
         futures::executor::block_on(session_state.create_physical_plan(&logical_plan))?;
 
@@ -1817,6 +1820,13 @@ fn collect_reads(rel: &substrait::proto::Rel, out: &mut Vec<substrait::proto::Re
         }
         Some(RelType::Set(s)) => {
             for input in &s.inputs {
+                collect_reads(input, out);
+            }
+        }
+        // [NESTED] Our unnest is carried as an ExtensionSingle wrapping the ReadRel; recurse into it
+        // so schema derivation still finds and registers the underlying NamedTable.
+        Some(RelType::ExtensionSingle(e)) => {
+            if let Some(input) = &e.input {
                 collect_reads(input, out);
             }
         }

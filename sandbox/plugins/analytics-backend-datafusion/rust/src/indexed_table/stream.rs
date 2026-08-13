@@ -47,7 +47,7 @@ use datafusion::physical_plan::{
 };
 use datafusion_common::DataFusionError;
 use futures::{Future, Stream};
-use native_bridge_common::log_debug;
+use native_bridge_common::log_info;
 use tokio::task::JoinHandle;
 
 use super::eval::{PrefetchedRg, RowGroupBitsetSource};
@@ -849,6 +849,37 @@ impl IndexedStream {
 
         Ok(output)
     }
+
+    /// Emits one INFO line per segment when its DataFusion scan finishes — the data-node half of the
+    /// delegation handshake (the Lucene half is the `[NAM-*]` lines). Shows how effectively the delegated
+    /// row bitset (or a flat predicate) pruned the Parquet scan: row-groups processed vs skipped, pages
+    /// pruned, and rows matched vs emitted. Reads counters already tracked in `StreamMetrics`; keeps the
+    /// existing DEBUG `[scf-segment-done]` semantics but at INFO so it is visible without raising the log
+    /// level (the old DEBUG line was suppressed by default, which is why the DataFusion side looked silent).
+    fn log_segment_summary(&self) {
+        let m = |c: &Option<datafusion::physical_plan::metrics::Count>| c.as_ref().map(|x| x.value()).unwrap_or(0);
+        let rg_total = self.index_reader.row_groups.len();
+        let rg_skipped = m(&self.metrics.rg_skipped);
+        let rg_prefetch_pruned = m(&self.metrics.dynamic_filter_rg_pruned_at_prefetch);
+        let rg_bloom = m(&self.metrics.rg_bloom_pruned);
+        log_info!(
+            "[SCF-DF] file={} row_groups={} rg_processed={} rg_skipped={} rg_pruned_prefetch={} rg_bloom_pruned={} \
+             pages_pruned={}/{} rows_matched={} rows_pruned={} output_rows={} ffm_collector_calls={} elapsed={:?}",
+            self.object_path.filename().unwrap_or("?"),
+            rg_total,
+            m(&self.metrics.rg_processed),
+            rg_skipped,
+            rg_prefetch_pruned,
+            rg_bloom,
+            m(&self.metrics.pages_pruned),
+            m(&self.metrics.pages_total),
+            m(&self.metrics.rows_matched),
+            m(&self.metrics.rows_pruned),
+            m(&self.metrics.output_rows),
+            m(&self.metrics.ffm_collector_calls),
+            self.stream_start.map(|s| s.elapsed()).unwrap_or_default()
+        );
+    }
 }
 
 impl Stream for IndexedStream {
@@ -918,12 +949,7 @@ impl IndexedStream {
 
             // 2. If upstream is done and coalescer has drained, we're done.
             if self.coalescer_finished && self.batch_coalescer.is_empty() {
-                log_debug!(
-                    "[scf-segment-done] file={} row_groups={} elapsed={:?}",
-                    self.object_path.filename().unwrap_or("?"),
-                    self.index_reader.row_groups.len(),
-                    self.stream_start.unwrap().elapsed()
-                );
+                self.log_segment_summary();
                 return Poll::Ready(None);
             }
 
@@ -943,12 +969,7 @@ impl IndexedStream {
             if self.coalescer_finished {
                 // Unreachable in practice — step 1 already drained or
                 // step 2 already returned. Defensive.
-                log_debug!(
-                    "[scf-segment-done] file={} row_groups={} elapsed={:?}",
-                    self.object_path.filename().unwrap_or("?"),
-                    self.index_reader.row_groups.len(),
-                    self.stream_start.unwrap().elapsed()
-                );
+                self.log_segment_summary();
                 return Poll::Ready(None);
             }
 

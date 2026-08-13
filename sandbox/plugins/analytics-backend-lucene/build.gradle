@@ -66,6 +66,7 @@ dependencies {
     // resolves on the javadoc classpath — without this, javadoc -Werror fails on unknown
     // enum-constant warnings in transitive Arrow types.
     compileOnly "com.fasterxml.jackson.core:jackson-annotations:${versions.jackson_annotations}"
+    compileOnly "com.fasterxml.jackson.core:jackson-databind:${versions.jackson_databind}"
 
     implementation "org.apache.logging.log4j:log4j-api:${versions.log4j}"
     implementation "org.apache.logging.log4j:log4j-core:${versions.log4j}"

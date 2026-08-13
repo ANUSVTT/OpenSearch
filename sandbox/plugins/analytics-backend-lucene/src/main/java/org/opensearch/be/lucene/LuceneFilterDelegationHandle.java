@@ -15,6 +15,7 @@ import org.apache.lucene.index.FilterLeafReader;
 import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.SegmentReader;
+import org.apache.lucene.index.SortedNumericDocValues;
 import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.Query;
@@ -27,6 +28,7 @@ import org.opensearch.analytics.spi.FilterDelegationHandle;
 import org.opensearch.core.common.io.stream.NamedWriteableAwareStreamInput;
 import org.opensearch.core.common.io.stream.NamedWriteableRegistry;
 import org.opensearch.core.common.io.stream.StreamInput;
+import org.opensearch.index.engine.dataformat.DocumentInput;
 import org.opensearch.index.engine.exec.coord.CatalogSnapshot;
 import org.opensearch.index.query.QueryBuilder;
 import org.opensearch.index.query.QueryShardContext;
@@ -54,6 +56,9 @@ import java.util.function.BooleanSupplier;
 final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
 
     private static final Logger LOGGER = LogManager.getLogger(LuceneFilterDelegationHandle.class);
+
+    /** The {@code __row_id__} doc-values field written on root docs; read per-collector for docId->row mapping. */
+    private static final String ROW_ID_FIELD = DocumentInput.ROW_ID_FIELD;
 
     // TODO: lazy query compilation for performance-delegated predicates. Today
     // every delegated expression is compiled (QueryBuilder → Lucene Query) at
@@ -108,6 +113,12 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
                 // has no doc_values/norms (they live in the parquet primary), so a FieldExistsQuery
                 // built from an _exists_ clause (PPL `search field!=value`) would throw at rewrite().
                 Query query = LuceneQueryConversionUtils.rewriteFieldExistsForSecondary(queryBuilder.toQuery(context));
+                LOGGER.info(
+                    "[NAM-QDBG] annotationId={} queryBuilder=[{}] compiledQuery=[{}]",
+                    expr.getAnnotationId(),
+                    queryBuilder,
+                    query
+                );
                 queries.put(expr.getAnnotationId(), query);
             } catch (IOException exception) {
                 throw new IllegalStateException(
@@ -126,10 +137,41 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
             return -1;
         }
         try {
-            Weight weight = searcher.createWeight(searcher.rewrite(query), ScoreMode.COMPLETE_NO_SCORES, 1.0f);
+            Query rewritten = searcher.rewrite(query);
+            Weight weight = searcher.createWeight(rewritten, ScoreMode.COMPLETE_NO_SCORES, 1.0f);
             int providerKey = nextProviderKey.getAndIncrement();
             weightsByProviderKey.put(providerKey, weight);
-            LOGGER.debug("[scf] createProvider annotationId={} → providerKey={}", annotationId, providerKey);
+            LOGGER.info("[scf] createProvider annotationId={} → providerKey={} rewrittenQuery=[{}]", annotationId, providerKey, rewritten);
+            // ONE-SHOT DIAGNOSTIC: scan every leaf with a fresh scorer, doc 0..end, logging where the
+            // block-join's matches land in docId space and their translated rows — independent of any window.
+            for (LeafReaderContext lrc : leaves) {
+                try {
+                    Scorer probe = weight.scorer(lrc);
+                    if (probe == null) {
+                        LOGGER.info("[NAM-PROBE] annotationId={} leaf(ord={},docBase={},maxDoc={}) scorer=NULL", annotationId, lrc.ord, lrc.docBase, lrc.reader().maxDoc());
+                        continue;
+                    }
+                    SortedNumericDocValues rid = lrc.reader().getSortedNumericDocValues(ROW_ID_FIELD);
+                    DocIdSetIterator it = probe.iterator();
+                    StringBuilder sb = new StringBuilder();
+                    int d = it.nextDoc();
+                    int c = 0;
+                    while (d != DocIdSetIterator.NO_MORE_DOCS && c < 40) {
+                        String rowStr = "?";
+                        if (rid != null && rid.advanceExact(d)) {
+                            rowStr = Long.toString(rid.nextValue());
+                        } else if (rid != null) {
+                            rowStr = "CHILD(noRowId)";
+                        }
+                        sb.append("d").append(d).append("/row=").append(rowStr).append(" ");
+                        d = it.nextDoc();
+                        c++;
+                    }
+                    LOGGER.info("[NAM-PROBE] annotationId={} leaf(ord={},docBase={},maxDoc={}) blockJoinMatches(first{})=[{}]", annotationId, lrc.ord, lrc.docBase, lrc.reader().maxDoc(), c, sb);
+                } catch (Exception pe) {
+                    LOGGER.warn("[NAM-PROBE] leaf probe failed", pe);
+                }
+            }
             return providerKey;
         } catch (IOException exception) {
             LOGGER.error("createProvider failed for annotationId=" + annotationId, exception);
@@ -170,30 +212,51 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
             return -1;
         }
 
-        int leafMaxDoc = leaf.reader().maxDoc();
-        assert minDoc >= 0 && minDoc <= maxDoc && maxDoc <= leafMaxDoc : "createCollector(providerKey="
+        // Build (or fetch from the per-segment cache) the docId<->logical-row translator for this leaf. On a
+        // NESTED segment a logical document is a block of N+1 Lucene docs (children first, root last), so
+        // Lucene docIds do NOT equal Parquet logical rows; the translator maps between the two spaces via the
+        // root __row_id__ doc-values. On a non-nested segment it is a pass-through (docId == row). The
+        // delegated-filter window [minDoc,maxDoc) is a LOGICAL-ROW window (a Parquet row-group slice), so it
+        // is validated against the logical-row count (== parent count on a nested leaf, == maxDoc on a flat).
+        RowIdTranslator translator;
+        try {
+            translator = RowIdTranslator.forLeaf(leaf);
+        } catch (IOException exception) {
+            LOGGER.error(
+                "createCollector: failed building row-id translator for segment=" + segName + " (writerGeneration=" + writerGeneration + ")",
+                exception
+            );
+            return -1;
+        }
+
+        int logicalRowCount = translator.logicalRowCount();
+        assert minDoc >= 0 && minDoc <= maxDoc && maxDoc <= logicalRowCount : "createCollector(providerKey="
             + providerKey
             + ", writerGeneration="
             + writerGeneration
             + " -> segment="
             + segName
-            + "): partition ["
+            + "): logical-row window ["
             + minDoc
             + ","
             + maxDoc
-            + ") exceeds leaf maxDoc="
-            + leafMaxDoc;
+            + ") exceeds logical-row count="
+            + logicalRowCount;
 
         try {
             Scorer scorer = weight.scorer(leaf);
+            // Per-collector cursor over __row_id__ for the docId->row lookup in collectDocs. On a nested leaf
+            // this is the live doc-values the translator reads with advanceExact; null on a flat leaf (unused).
+            SortedNumericDocValues rowIdDV = translator.isNested() ? leaf.reader().getSortedNumericDocValues(ROW_ID_FIELD) : null;
             int collectorKey = nextCollectorKey.getAndIncrement();
-            scorersByCollectorKey.put(collectorKey, new ScorerHandle(scorer, minDoc, maxDoc));
+            scorersByCollectorKey.put(collectorKey, new ScorerHandle(scorer, minDoc, maxDoc, translator, rowIdDV));
             LOGGER.debug(
-                "[scf] createCollector providerKey={} writerGeneration={} range=[{},{}) → collectorKey={}",
+                "[scf] createCollector providerKey={} writerGeneration={} rowWindow=[{},{}) nested={} → collectorKey={}",
                 providerKey,
                 writerGeneration,
                 minDoc,
                 maxDoc,
+                translator.isNested(),
                 collectorKey
             );
             return collectorKey;
@@ -220,31 +283,96 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
         if (maxDoc <= minDoc) {
             return 0;
         }
+        // [minDoc,maxDoc) is a LOGICAL-ROW window (a Parquet row-group slice). The returned bitset is indexed
+        // by logical-row offset (row - minDoc) — the coordinate space the Rust indexed scan turns into a
+        // Parquet RowSelection. `span` is therefore a count of logical rows, correct for flat and nested.
         int span = maxDoc - minDoc;
         FixedBitSet bits = new FixedBitSet(span);
 
         if (handle.scorer != null) {
-            int scanFrom = Math.max(minDoc, handle.partitionMinDoc);
-            int scanTo = Math.min(maxDoc, handle.partitionMaxDoc);
+            RowIdTranslator translator = handle.translator;
+            // Clamp the requested row window to this collector's partition (also logical-row space).
+            int scanRowFrom = Math.max(minDoc, handle.partitionRowMin);
+            int scanRowTo = Math.min(maxDoc, handle.partitionRowMax);
 
-            if (scanFrom < scanTo) {
+            if (scanRowFrom < scanRowTo) {
+                // Translate the row window to the Lucene docId range to scan. Flat: docId == row (identity).
+                // Nested: the parent docs for rows [scanRowFrom,scanRowTo) live in a contiguous docId
+                // sub-range (children precede their root), resolved by direct index into the cached
+                // parentDocIds array. The block-join query returns ROOT docs only, so we scan that range and
+                // translate each matched root back to its logical row.
+                int docFrom = translator.firstDocIdForRow(scanRowFrom);
+                int docTo = translator.docIdScanBoundForRow(scanRowTo);
+                int matched = 0;
+                int skippedNoRow = 0;
+                int skippedOutOfWindow = 0;
+                StringBuilder matchTrace = new StringBuilder();
                 try {
                     DocIdSetIterator iterator = handle.scorer.iterator();
                     int docId = handle.currentDoc;
+                    LOGGER.info(
+                        "[NAM-COLL] collectorKey={} rowWindow=[{},{}) scanRow=[{},{}) docRange=[{},{}) startCursor={} scorerCost={}",
+                        collectorKey,
+                        minDoc,
+                        maxDoc,
+                        scanRowFrom,
+                        scanRowTo,
+                        docFrom,
+                        docTo,
+                        docId,
+                        iterator.cost()
+                    );
                     if (docId != DocIdSetIterator.NO_MORE_DOCS) {
-                        if (docId < scanFrom) {
-                            docId = iterator.advance(scanFrom);
+                        if (docId < docFrom) {
+                            docId = iterator.advance(docFrom);
                         }
-                        while (docId != DocIdSetIterator.NO_MORE_DOCS && docId < scanTo) {
-                            bits.set(docId - minDoc);
+                        while (docId != DocIdSetIterator.NO_MORE_DOCS && docId < docTo) {
+                            // Map the matched Lucene docId to its logical row. Flat: identity. Nested: the
+                            // block-join match is a ROOT doc carrying __row_id__; NO_ROW means the docId had
+                            // no row (e.g. a stray child on a mis-shaped query) and is skipped rather than
+                            // corrupting the bitset.
+                            long row = translator.rowForDocId(docId, handle.rowIdDV);
+                            matched++;
+                            if (matchTrace.length() < 200) {
+                                matchTrace.append("doc=").append(docId).append("->row=").append(row).append(" ");
+                            }
+                            if (row == RowIdTranslator.NO_ROW) {
+                                skippedNoRow++;
+                            } else if (row >= minDoc && row < maxDoc) {
+                                bits.set((int) (row - minDoc));
+                            } else {
+                                skippedOutOfWindow++;
+                            }
                             docId = iterator.nextDoc();
                         }
                         handle.currentDoc = docId;
                     }
+                    LOGGER.info(
+                        "[NAM-COLL] collectorKey={} matchedDocs={} skippedNoRow={} skippedOutOfWindow={} cardinality={} matches=[{}]",
+                        collectorKey,
+                        matched,
+                        skippedNoRow,
+                        skippedOutOfWindow,
+                        bits.cardinality(),
+                        matchTrace
+                    );
                 } catch (IOException exception) {
                     LOGGER.warn("IOException during collectDocs, returning partial bitset", exception);
                 }
+            } else {
+                LOGGER.info(
+                    "[NAM-COLL] collectorKey={} rowWindow=[{},{}) EMPTY scan window (scanRowFrom={} >= scanRowTo={}, partition=[{},{}))",
+                    collectorKey,
+                    minDoc,
+                    maxDoc,
+                    scanRowFrom,
+                    scanRowTo,
+                    handle.partitionRowMin,
+                    handle.partitionRowMax
+                );
             }
+        } else {
+            LOGGER.info("[NAM-COLL] collectorKey={} scorer is NULL (query matched nothing on this leaf)", collectorKey);
         }
 
         long[] words = bits.getBits();
@@ -252,10 +380,11 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
         MemorySegment.copy(words, 0, out, ValueLayout.JAVA_LONG, 0, wordCount);
         if (LOGGER.isDebugEnabled()) {
             LOGGER.debug(
-                "[scf] collectDocs collectorKey={} range=[{},{}) → cardinality={} words={}",
+                "[scf] collectDocs collectorKey={} rowWindow=[{},{}) nested={} → cardinality={} words={}",
                 collectorKey,
                 minDoc,
                 maxDoc,
+                handle.translator.isNested(),
                 bits.cardinality(),
                 wordCount
             );
@@ -289,14 +418,25 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
 
     private static final class ScorerHandle {
         final Scorer scorer;
-        final int partitionMinDoc;
-        final int partitionMaxDoc;
+        /** Partition bounds in LOGICAL-ROW space (Parquet row-group slice), inclusive-exclusive. */
+        final int partitionRowMin;
+        final int partitionRowMax;
+        /** docId-to-row translator for the collector's leaf (pass-through on a non-nested leaf). */
+        final RowIdTranslator translator;
+        /**
+         * Live {@code __row_id__} doc-values cursor for the docId->row lookup in collectDocs; null on a flat
+         * leaf (the translator is identity there and never reads it). Advanced forward across matches.
+         */
+        final SortedNumericDocValues rowIdDV;
+        /** Forward cursor in Lucene docId space, monotonic across successive collectDocs calls. */
         int currentDoc = -1;
 
-        ScorerHandle(Scorer scorer, int partitionMinDoc, int partitionMaxDoc) {
+        ScorerHandle(Scorer scorer, int partitionRowMin, int partitionRowMax, RowIdTranslator translator, SortedNumericDocValues rowIdDV) {
             this.scorer = scorer;
-            this.partitionMinDoc = partitionMinDoc;
-            this.partitionMaxDoc = partitionMaxDoc;
+            this.partitionRowMin = partitionRowMin;
+            this.partitionRowMax = partitionRowMax;
+            this.translator = translator;
+            this.rowIdDV = rowIdDV;
         }
     }
 }

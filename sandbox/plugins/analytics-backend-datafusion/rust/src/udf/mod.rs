@@ -148,6 +148,7 @@ pub mod makedate;
 pub mod maketime;
 pub mod minspan_bucket;
 pub mod mvappend;
+pub mod nested_any_match_expr;
 pub mod mvfind;
 pub mod mvzip;
 pub(crate) mod os_strftime;
@@ -203,6 +204,7 @@ pub fn register_all(ctx: &SessionContext) {
     mvappend::register_all(ctx);
     mvfind::register_all(ctx);
     mvzip::register_all(ctx);
+    nested_any_match_expr::register_all(ctx);
     os_week::register_all(ctx);
     parse::register_all(ctx);
     pattern_parser::register_all(ctx);

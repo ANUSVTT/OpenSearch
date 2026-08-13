@@ -38,7 +38,10 @@ use datafusion::{
     physical_plan::stream::RecordBatchStreamAdapter,
     physical_plan::ExecutionPlan,
 };
-use datafusion_substrait::logical_plan::consumer::from_substrait_plan;
+// [NESTED] Route Substrait deserialization through the unnest-aware consumer so an
+// ExtensionSingle(unnest_reshape:<col>) rebuilds LogicalPlan::Unnest (nested aggregation path).
+// Aliased to from_substrait_plan so existing call sites are unchanged; non-unnest plans are unaffected.
+use crate::unnest_consumer::from_substrait_plan_unnest_aware as from_substrait_plan;
 use native_bridge_common::log_debug;
 use prost::Message;
 use substrait::proto::Plan;

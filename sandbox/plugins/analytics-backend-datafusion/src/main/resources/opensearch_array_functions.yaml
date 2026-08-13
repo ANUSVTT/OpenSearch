@@ -83,6 +83,26 @@ scalar_functions:
             name: index
         return: "any1?"
 
+  - name: get_field
+    description: >-
+      Extract a named field from a struct value by name. Used by the nested-field
+      rewriter's non-unnesting projection path: {@code ITEM(ARRAY_ELEMENT($arrayCol,1),
+      'field')} (dotted nested projection, e.g. {@code comments.author}) rewrites to
+      {@code GET_FIELD(ARRAY_ELEMENT($arrayCol,1), 'field')} so the whole expression
+      stays a plain scalar call — no Correlate/Uncollect. Maps by name directly to
+      DataFusion's own built-in {@code get_field} UDF (datafusion-functions
+      core/getfield.rs) — no Rust-side implementation needed here, only the Substrait
+      extension declaration so isthmus can emit the call. NOT the same as Mustang's
+      `item` UDF, which is hard-coded for MapArray input (PPL parse/grok/spath); this
+      is struct field access.
+    impls:
+      - args:
+          - value: any1
+            name: struct_val
+          - value: string
+            name: field_name
+        return: "any2?"
+
   - name: mvappend
     description: >-
       Flatten a list of arrays into one array, dropping null arrays and null

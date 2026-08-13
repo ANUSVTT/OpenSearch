@@ -117,6 +117,19 @@ public class LuceneAnalyticsBackendPlugin implements AnalyticsSearchBackendPlugi
 
     private static final Set<FieldType> KEYWORD_ONLY = Set.of(FieldType.KEYWORD);
 
+    // NESTED_ANY_MATCH_EXPR(arrayCol, jsonExprTree): the generic per-element predicate
+    // OpenSearchNestedFieldRewriter emits for ANY predicate shape on a single array column
+    // (see its javadoc). Registered on ARRAY here — the array COLUMN's Calcite type, not any
+    // leaf field's type — as a STATIC capability declaration; this alone only says Lucene MAY
+    // be viable. Whether a given instance actually is depends on the JSON tree's shape (Lucene
+    // can only translate a single string-equality leaf into a native TermQuery), which is
+    // decided per-call by NestedAnyMatchExprSerializer#canServe, consulted from
+    // OpenSearchFilterRule.resolveViableBackends.
+    private static final Set<ScalarFunction> NESTED_OPS = Set.of(
+        ScalarFunction.NESTED_ANY_MATCH_EXPR
+    );
+    private static final Set<FieldType> NESTED_FILTER_TYPES = Set.of(FieldType.ARRAY);
+
     private static final Set<FilterCapability> FILTER_CAPS;
     static {
         Set<FilterCapability> caps = new HashSet<>();
@@ -131,6 +144,9 @@ public class LuceneAnalyticsBackendPlugin implements AnalyticsSearchBackendPlugi
             for (FieldType type : FULL_TEXT_TYPES) {
                 caps.add(new FilterCapability.FullText(op, type, LUCENE_FORMATS, Set.of()));
             }
+        }
+        for (ScalarFunction op : NESTED_OPS) {
+            caps.add(new FilterCapability.Standard(op, NESTED_FILTER_TYPES, LUCENE_FORMATS));
         }
         FILTER_CAPS = caps;
     }
@@ -263,25 +279,57 @@ public class LuceneAnalyticsBackendPlugin implements AnalyticsSearchBackendPlugi
 
     /** Package-private — also reused by {@link LuceneScanInstructionHandler} in driver mode. */
     static QueryShardContext buildMinimalQueryShardContext(ShardScanExecutionContext ctx, IndexSearcher searcher) {
-        return new QueryShardContext(
-            0,
-            ctx.getIndexSettings(),
-            null,  // bigArrays
-            null,  // bitsetFilterCache
-            null,  // indexFieldDataLookup
-            ctx.getMapperService(),
-            null,  // similarityService
-            null,  // scriptService
-            null,  // xContentRegistry
-            null,  // namedWriteableRegistry
-            null,  // client
-            searcher,
-            System::currentTimeMillis,
-            null,  // clusterAlias
-            s -> true,  // indexNameMatcher
-            () -> true,  // allowExpensiveQueries
-            null   // valuesSourceRegistry
-        );
+        return new MinimalQueryShardContext(ctx.getIndexSettings(), ctx.getMapperService(), searcher);
+    }
+
+    /**
+     * {@code bitsetFilter(Query)} overridden to build an uncached {@code QueryBitSetProducer}
+     * directly, bypassing {@code BitsetFilterCache}/{@code IndicesBitsetFilterCache} entirely.
+     * {@link org.opensearch.index.query.NestedQueryBuilder#doToQuery} calls {@code context.bitsetFilter(...)} to get a
+     * parent-doc {@code BitSetProducer} for the {@code ToParentBlockJoinQuery} it builds (needed
+     * by {@link org.opensearch.be.lucene.serializers.NestedAnyMatchExprSerializer}'s
+     * performance-delegation query for nested equality predicates); the base class's {@code
+     * bitsetFilterCache} field has no shard-level {@code IndicesBitsetFilterCache} available in
+     * this per-fragment, delegated-predicate-compilation context ({@code
+     * IndicesBitsetFilterCache} needs a {@code ThreadPool} to schedule its periodic cache-cleaner
+     * — real shard infrastructure this lightweight context doesn't have and shouldn't need just
+     * to compile one query). Producing the bitset directly per call is correct — this context is
+     * built fresh per delegated fragment and not reused across queries, so there is no cache to
+     * usefully populate anyway.
+     */
+    private static final class MinimalQueryShardContext extends QueryShardContext {
+        MinimalQueryShardContext(org.opensearch.index.IndexSettings indexSettings, org.opensearch.index.mapper.MapperService mapperService, IndexSearcher searcher) {
+            super(
+                0,
+                indexSettings,
+                null,  // bigArrays
+                null,  // bitsetFilterCache — unused; bitsetFilter(Query) is overridden below
+                null,  // indexFieldDataLookup
+                mapperService,
+                null,  // similarityService
+                null,  // scriptService
+                null,  // xContentRegistry
+                null,  // namedWriteableRegistry
+                null,  // client
+                searcher,
+                System::currentTimeMillis,
+                null,  // clusterAlias
+                s -> true,  // indexNameMatcher
+                () -> true,  // allowExpensiveQueries
+                null   // valuesSourceRegistry
+            );
+        }
+
+        @Override
+        public org.apache.lucene.search.join.BitSetProducer bitsetFilter(org.apache.lucene.search.Query filter) {
+            // Use the composite-aware, segment-lifetime-cached producer (our runtime): it caches the parent
+            // bitset per (segment, parent-query) with close-listener eviction — cross-query reuse without the
+            // shard BitsetFilterCache — and rewrites the vanilla root marker FieldExistsQuery(_primary_term)
+            // to FieldExistsQuery(__row_id__), the field the Mustang Lucene secondary actually marks root docs
+            // with (_primary_term lives only in the Parquet primary). A plain uncached QueryBitSetProducer
+            // would match nothing here and its cache would be cold every query.
+            return new CachingParentBitSetProducer(filter);
+        }
     }
 
     // ---- Serializers ----

@@ -97,6 +97,12 @@ public class OpenSearchFilterRule extends RelOptRule {
         }
 
         LOGGER.debug("Filter viable backends: {} (child viable: {})", viableBackends, childViableBackends);
+        LOGGER.info(
+            "[TRACE-STEP] mark(OpenSearchFilterRule): operator-level viableBackends={} (childViableBackends={}), annotatedCondition=`{}`",
+            viableBackends,
+            childViableBackends,
+            annotatedCondition
+        );
 
         call.transformTo(
             new OpenSearchFilter(
@@ -136,7 +142,14 @@ public class OpenSearchFilterRule extends RelOptRule {
         // every declared FilterCapability has a matching serializer registered, and reject
         // the plugin otherwise — fail-fast at boot rather than at first dual-viable query.
         // Needs revisiting.
-        return new AnnotatedPredicate(rexCall.getType(), rexCall, viableBackends, context.nextAnnotationId());
+        int leafAnnotationId = context.nextAnnotationId();
+        LOGGER.info(
+            "[TRACE-STEP] mark(OpenSearchFilterRule): leaf predicate id={} `{}` -> viableBackends={}",
+            leafAnnotationId,
+            rexCall,
+            viableBackends
+        );
+        return new AnnotatedPredicate(rexCall.getType(), rexCall, viableBackends, leafAnnotationId);
     }
 
     /**
@@ -271,6 +284,17 @@ public class OpenSearchFilterRule extends RelOptRule {
 
             viableSet.retainAll(fieldViable);
         }
+
+        // Static (function, fieldType) registration alone can be too coarse to decide viability for
+        // some functions (e.g. NESTED_ANY_MATCH_EXPR, whose RexCall carries an arbitrary JSON-tree
+        // operand) — give each still-viable backend's serializer a chance to inspect the actual call
+        // and narrow further. Backends without a serializer, or whose serializer doesn't override
+        // canServe, are unaffected (default true). This can only NARROW viableSet, never grant
+        // viability the static check didn't already establish.
+        viableSet.removeIf(candidateName -> {
+            DelegatedPredicateSerializer serializer = registry.getBackend(candidateName).delegatedPredicateSerializers().get(function);
+            return serializer != null && !serializer.canServe(predicate, fieldStorageInfos);
+        });
 
         // Every nested scalar function in the predicate must also be evaluable by a candidate backend
         for (RexCall scalarFunctionCall : contents.scalarFunctionCalls()) {

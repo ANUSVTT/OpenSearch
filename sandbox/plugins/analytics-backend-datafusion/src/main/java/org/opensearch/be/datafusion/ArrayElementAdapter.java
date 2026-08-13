@@ -46,6 +46,16 @@ import java.util.List;
  *       {@code array_element} signature accepts only integer indexes.
  * </ol>
  *
+ * <p>A third dispatch handles {@code ITEM(ROW, 'field')} — struct field access, distinct
+ * from array-index access. {@code OpenSearchNestedFieldRewriter}'s plain-projection path
+ * (dotted nested field with no {@code expand}/group-by/aggregate-argument use, e.g.
+ * {@code fields comments.author}) emits {@code ITEM(ITEM($arrayCol, 1), 'field')}: the
+ * outer call is ordinary array-index dispatch (handled above); the inner call's container
+ * is the array's element type, a {@code ROW} — renamed here to {@code get_field}, DataFusion's
+ * native struct-field accessor. Not the same as the MAP branch below: Mustang's own {@code item}
+ * UDF is hard-coded for {@code MapArray} input (PPL parse/grok/spath chains) and cannot read a
+ * struct, so struct access must go to DataFusion's {@code get_field} instead.
+ *
  * @opensearch.internal
  */
 class ArrayElementAdapter implements ScalarFunctionAdapter {
@@ -82,6 +92,21 @@ class ArrayElementAdapter implements ScalarFunctionAdapter {
         SqlFunctionCategory.SYSTEM
     );
 
+    /**
+     * Locally-declared target operator for the struct-input case. Name matches
+     * DataFusion's native {@code get_field}, declared in
+     * {@code opensearch_array_functions.yaml}. Same placeholder return-type
+     * approach as {@link #LOCAL_ARRAY_ELEMENT_OP}.
+     */
+    static final SqlOperator LOCAL_GET_FIELD_OP = new SqlFunction(
+        "get_field",
+        SqlKind.OTHER_FUNCTION,
+        ReturnTypes.ARG0,
+        null,
+        OperandTypes.ANY_ANY,
+        SqlFunctionCategory.SYSTEM
+    );
+
     @Override
     public RexNode adapt(RexCall original, List<FieldStorageInfo> fieldStorage, RelOptCluster cluster) {
         RexBuilder rexBuilder = cluster.getRexBuilder();
@@ -92,6 +117,13 @@ class ArrayElementAdapter implements ScalarFunctionAdapter {
         }
         RexNode container = operands.get(0);
         RexNode key = operands.get(1);
+        // Struct dispatch — the nested-field rewriter's plain-projection path builds
+        // ITEM(ITEM($arrayCol,1),'field'); the inner ITEM's container is the array's
+        // element type (a ROW), and the key is always a string field-name literal —
+        // never coerce it to BIGINT (that's the array-index branch below).
+        if (container.getType().getSqlTypeName() == SqlTypeName.ROW) {
+            return rexBuilder.makeCall(original.getType(), LOCAL_GET_FIELD_OP, List.of(container, key));
+        }
         // Map dispatch — PPL spath's JSON_EXTRACT_ALL returns MAP, so
         // `result.user.name` lowers to `ITEM(map, 'user.name')` with a string
         // key. DataFusion's `map_extract(map, key)` returns `List<value>`

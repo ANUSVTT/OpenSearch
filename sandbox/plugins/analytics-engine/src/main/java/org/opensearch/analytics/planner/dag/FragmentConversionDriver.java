@@ -81,6 +81,7 @@ public class FragmentConversionDriver {
      * {@link StagePlan#convertedBytes()} on each plan.
      */
     public static void convertAll(QueryDAG dag, CapabilityRegistry registry) {
+        LOGGER.info("[TRACE-STEP] FragmentConversionDriver.convertAll: START. QueryDAG=\n{}", dag);
         convertStage(dag.rootStage(), registry);
         // Root stage executes locally at coordinator — store factory for instruction dispatch.
         Stage root = dag.rootStage();
@@ -88,9 +89,18 @@ public class FragmentConversionDriver {
             AnalyticsSearchBackendPlugin backend = registry.getBackend(root.getPlanAlternatives().getFirst().backendId());
             root.setInstructionHandlerFactory(backend.getInstructionHandlerFactory());
         }
+        LOGGER.info(
+            "[TRACE-STEP] FragmentConversionDriver.convertAll: DONE. rootStage now has {} converted plan alternative(s) with convertedBytes populated.",
+            root.getPlanAlternatives().size()
+        );
     }
 
     private static void convertStage(Stage stage, CapabilityRegistry registry) {
+        LOGGER.info(
+            "[TRACE-STEP] convertStage(stageId={}): START. {} child stage(s) to convert first (recursion: children before this stage, since the parent's Substrait plan needs to reference child stage outputs by id).",
+            stage.getStageId(),
+            stage.getChildStages().size()
+        );
         for (Stage child : stage.getChildStages()) {
             convertStage(child, registry);
         }
@@ -102,13 +112,25 @@ public class FragmentConversionDriver {
         // stub Read carrying the wrapper's output schema so Stage 3's parent reduce sink
         // can derive the partition schema via the standard producerPlanBytes path.
         if (stage.getExecutionType() == StageExecutionType.LATE_MATERIALIZATION) {
+            LOGGER.info("[TRACE-STEP] convertStage(stageId={}): executionType=LATE_MATERIALIZATION -> convertLateMaterializationStage (no Substrait compute, Java-only scatter/gather stub)", stage.getStageId());
             convertLateMaterializationStage(stage, registry);
             return;
         }
+        LOGGER.info(
+            "[TRACE-STEP] convertStage(stageId={}): {} plan alternative(s) to convert (one per candidate backend before PlanAlternativeSelector narrows to the final choice)",
+            stage.getStageId(),
+            stage.getPlanAlternatives().size()
+        );
         List<StagePlan> converted = new ArrayList<>(stage.getPlanAlternatives().size());
         for (StagePlan plan : stage.getPlanAlternatives()) {
             AnalyticsSearchBackendPlugin backend = registry.getBackend(plan.backendId());
             FragmentConvertor convertor = backend.getFragmentConvertor();
+            LOGGER.info(
+                "[TRACE-STEP] convertStage(stageId={}): converting plan alternative for backend=[{}]. resolvedFragment (this alternative's RelNode, annotations still attached) =\n{}",
+                stage.getStageId(),
+                plan.backendId(),
+                org.apache.calcite.plan.RelOptUtil.toString(plan.resolvedFragment())
+            );
 
             // Derive filter tree shape BEFORE stripping (annotations must be intact). The deriver
             // mirrors the combiner's post-combine shape so the data node's classification matches
@@ -125,17 +147,23 @@ public class FragmentConversionDriver {
             IntraOperatorDelegationBytes delegationBytes = new IntraOperatorDelegationBytes(registry);
             byte[] bytes = convert(plan.resolvedFragment(), convertor, delegationBytes);
 
+            // [NESTED-POC] The readable Substrait plan is logged in DataFusionFragmentConvertor
+            // (which owns the io.substrait proto classes; analytics-engine has no substrait dep).
+            // Here we log the shipped byte size + the DAG-level stage info below. Grep: NESTED-POC.
+
             // Assemble instruction list
             List<DelegatedExpression> delegated = delegationBytes.getResult();
             List<InstructionNode> instructions = assembleInstructions(backend, plan, treeShape, delegationBytes);
 
             converted.add(plan.withConvertedBytes(bytes, delegated).withInstructions(instructions));
-            LOGGER.debug(
-                "Stage [{}] converted: treeShape={}, delegatedExpressions={}{}",
+            LOGGER.info(
+                "[NESTED-POC] Stage [{}] converted: substraitBytes={}, treeShape={}, delegatedExpressions={}{}, instructions={}",
                 plan.backendId(),
+                bytes == null ? 0 : bytes.length,
                 treeShape,
                 delegated.size(),
-                delegated.isEmpty() ? "" : " [ids=" + delegated.stream().map(d -> String.valueOf(d.getAnnotationId())).toList() + "]"
+                delegated.isEmpty() ? "" : " [ids=" + delegated.stream().map(d -> String.valueOf(d.getAnnotationId())).toList() + "]",
+                instructions
             );
         }
         stage.setPlanAlternatives(converted);
@@ -235,7 +263,15 @@ public class FragmentConversionDriver {
         if (leaf instanceof OpenSearchTableScan tableScan) {
             // QTF narrows the Scan to [belowAnchorPhysicalFields..., __row_id__]; signal that to the
             // backend so it picks the row-id-aware table provider regardless of delegation.
-            boolean requestsRowIds = tableScan.getRowType().getFieldNames().contains(OpenSearchLateMaterialization.ROW_ID_FIELD);
+            //
+            // [NESTED] N1 nested plans also need this: they semi-join/group on __row_id__ inside the
+            // hand-built Substrait (not visible in the RelNode row type). The PHYSICAL parquet
+            // __row_id__ column restarts at 0 per writer generation, so with >1 generation the join
+            // would collide ids across generations (e.g. parent 0 of gen1 == parent 0 of gen2).
+            // requestsRowIds=true selects the indexed session context whose table provider COMPUTES
+            // shard-global ids (global_base + rg.first_row + position) — same mechanism QTF uses.
+            boolean requestsRowIds = tableScan.getRowType().getFieldNames().contains(OpenSearchLateMaterialization.ROW_ID_FIELD)
+                || containsUnnest(resolvedFragment);
             List<DelegatedExpression> delegated = delegationBytes.getResult();
             if (!delegated.isEmpty()) {
                 factory.createShardScanWithDelegationNode(treeShape, delegated.size(), requestsRowIds).ifPresent(instructions::add);
@@ -256,6 +292,27 @@ public class FragmentConversionDriver {
         if (root instanceof OpenSearchAggregate agg && agg.getMode() == AggregateMode.PARTIAL) return true;
         for (RelNode child : root.getInputs()) {
             if (containsPartialAggregate(child)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * [NESTED] True if the fragment contains an UNNEST — either {@link
+     * org.apache.calcite.rel.core.Uncollect} (possibly the marked {@code OpenSearchUncollect}, from
+     * PPL {@code expand}'s frontend-emitted {@code Correlate+Uncollect}) or {@link
+     * org.opensearch.analytics.planner.rel.OpenSearchNestedScope} (the generic nested-field rewrite's
+     * grain-change unnest, marked via a real capability lookup instead of hardcoded). Such plans
+     * reference the physical {@code __row_id__} for parent de-duplication/grouping, which is computed
+     * shard-globally only by the indexed executor; so we request row ids to select it (same reason as
+     * QTF, generalised to the generic nested path).
+     */
+    private static boolean containsUnnest(RelNode root) {
+        if (root instanceof org.apache.calcite.rel.core.Uncollect
+            || root instanceof org.opensearch.analytics.planner.rel.OpenSearchNestedScope) {
+            return true;
+        }
+        for (RelNode child : root.getInputs()) {
+            if (containsUnnest(child)) return true;
         }
         return false;
     }
@@ -408,6 +465,10 @@ public class FragmentConversionDriver {
      */
     static byte[] convert(RelNode resolvedFragment, FragmentConvertor convertor, IntraOperatorDelegationBytes delegationBytes) {
         RelNode leaf = findLeaf(resolvedFragment);
+        LOGGER.info(
+            "[TRACE-STEP] convert(): leaf node of this fragment = {} -> dispatching by leaf type (TableScan=shard-local single fragment; StageInputScan=reduce fragment over a child stage's gathered output; Values=coord-only literal source)",
+            leaf.getClass().getSimpleName()
+        );
 
         if (leaf instanceof OpenSearchTableScan) {
             // Identify the PARTIAL aggregate — either at the top of the fragment or buried
@@ -445,6 +506,11 @@ public class FragmentConversionDriver {
             }
 
             RelNode stripped = strip(resolvedFragment, delegationBytes);
+            LOGGER.info(
+                "[TRACE-STEP] convert(): plain TableScan-leaf path. BEFORE strip() (AnnotatedPredicates/ANNOTATED_PROJECT_EXPR still present):\n{}\nAFTER strip() (annotations replaced by their raw predicate OR a delegation_possible(...)/DelegatedPredicateFunction placeholder — this stripped tree is what convertor.convertFragment() actually turns into Substrait bytes):\n{}",
+                org.apache.calcite.plan.RelOptUtil.toString(resolvedFragment),
+                org.apache.calcite.plan.RelOptUtil.toString(stripped)
+            );
             return convertor.convertFragment(stripped);
         }
 

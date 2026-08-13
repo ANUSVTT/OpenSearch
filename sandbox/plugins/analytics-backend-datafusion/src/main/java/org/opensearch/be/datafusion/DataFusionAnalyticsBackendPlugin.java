@@ -73,7 +73,17 @@ public class DataFusionAnalyticsBackendPlugin implements AnalyticsSearchBackendP
 
     private static final Logger LOGGER = LogManager.getLogger(DataFusionAnalyticsBackendPlugin.class);
 
-    private static final Set<EngineCapability> ENGINE_CAPS = Set.of(EngineCapability.SORT, EngineCapability.UNION, EngineCapability.VALUES);
+    // NESTED_SCOPE: DataFusion lowers OpenSearchNestedScope to the existing unnest_reshape
+    // ExtensionSingleRel (see DataFusionFragmentConvertor's visit(OpenSearchNestedScope) override) —
+    // it reads Parquet LIST<STRUCT> columns and can natively explode them into child rows. Lucene
+    // registers no such capability yet — see OpenSearchNestedScope's javadoc for why (no bucket/
+    // group-by execution path exists there today); it stays out of viableBackends until that lands.
+    private static final Set<EngineCapability> ENGINE_CAPS = Set.of(
+        EngineCapability.SORT,
+        EngineCapability.UNION,
+        EngineCapability.VALUES,
+        EngineCapability.NESTED_SCOPE
+    );
 
     private static final Set<FieldType> SUPPORTED_FIELD_TYPES = new HashSet<>();
     static {
@@ -85,6 +95,10 @@ public class DataFusionAnalyticsBackendPlugin implements AnalyticsSearchBackendP
         SUPPORTED_FIELD_TYPES.add(FieldType.BINARY);
         SUPPORTED_FIELD_TYPES.add(FieldType.IP);
         SUPPORTED_FIELD_TYPES.add(FieldType.MATCH_ONLY_TEXT);
+        // POC nested (N1): DataFusion scans the Parquet LIST<STRUCT> column, so it must
+        // advertise a scan capability for NESTED — otherwise OpenSearchTableScanRule finds
+        // no viable backend for a `comments` projection and rejects the plan.
+        SUPPORTED_FIELD_TYPES.add(FieldType.NESTED);
     }
 
     // Filter-side scalar functions DataFusion can evaluate natively. Comparisons, arithmetic
@@ -120,7 +134,8 @@ public class DataFusionAnalyticsBackendPlugin implements AnalyticsSearchBackendP
         // json_valid returns BOOLEAN, so it is a valid filter predicate (e.g. `where
         // json_valid(col)` / `where not json_valid(col)`). DataFusion evaluates the json_valid Rust
         // UDF natively; same shape as CIDRMATCH.
-        ScalarFunction.JSON_VALID
+        ScalarFunction.JSON_VALID,
+        ScalarFunction.NESTED_ANY_MATCH_EXPR
     );
 
     // Project-side scalar functions DataFusion can evaluate natively. Each entry corresponds to a
@@ -594,6 +609,11 @@ public class DataFusionAnalyticsBackendPlugin implements AnalyticsSearchBackendP
                     // predicate against a MAP column is forced through an ITEM lookup that
                     // emits a value-typed scalar before substrait emission.
                     caps.add(new FilterCapability.Standard(op, Set.of(FieldType.MAP), formats));
+                    // ARRAY-typed fields enter the filter rule when the rewriter emits
+                    // NESTED_ANY_MATCH_EXPR(arrayCol, ...). The filter-rule's field-index collection
+                    // sees the underlying ARRAY column; without this the WHERE rejects with
+                    // "No backend can evaluate filter predicate [...] on fields [<col>:ARRAY]".
+                    caps.add(new FilterCapability.Standard(op, Set.of(FieldType.ARRAY), formats));
                 }
                 return Set.copyOf(caps);
             }
@@ -667,13 +687,8 @@ public class DataFusionAnalyticsBackendPlugin implements AnalyticsSearchBackendP
                 SecondAdapter second = new SecondAdapter();
                 // Stateless cast adapter shared between CAST and SAFE_CAST registrations.
                 IpBinaryCastFunctionAdapter ipBinaryCast = new IpBinaryCastFunctionAdapter();
-                // Stateless adapter shared across the six comparison operators. Wrapped by
-                // IpComparisonNormalizationAdapter so PPL IP-comparison UDFs (EQUALS_IP etc.) over
-                // VARBINARY ip/binary fields are rewritten to native comparators before temporal
-                // coercion (and before Substrait conversion, which has no EQUALS_IP binding).
-                ScalarFunctionAdapter comparisonTemporalCoercion = new IpComparisonNormalizationAdapter(
-                    new ComparisonTemporalCoercionAdapter()
-                );
+                // Stateless adapter shared across the six comparison operators.
+                ComparisonTemporalCoercionAdapter comparisonTemporalCoercion = new ComparisonTemporalCoercionAdapter();
                 return Map.ofEntries(
                     Map.entry(ScalarFunction.ARRAY, new MakeArrayAdapter()),
                     Map.entry(ScalarFunction.ARRAY_JOIN, new ArrayToStringAdapter()),

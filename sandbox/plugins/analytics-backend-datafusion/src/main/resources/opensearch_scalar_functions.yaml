@@ -398,6 +398,24 @@ scalar_functions:
           - { value: "map<string, string>", name: "map" }
           - { value: string, name: "key" }
         return: string
+  - name: "nested_any_match_expr"
+    description: >-
+      Lambda-based nested array predicate: iterates the struct-array column and returns TRUE
+      if a single element jointly satisfies the per-element predicate tree — a lone equality
+      leaf, a compound (AND/OR/NOT), arithmetic (+,-,*,/,%), or otherwise-shaped condition, e.g.
+      `subs.views > 65 and subs.views % 2 = 0`. Matches vanilla OpenSearch's native `nested`
+      query + Painless script semantics: a SINGLE array element must satisfy the WHOLE
+      expression jointly, never independent per-clause existence checks. The second argument
+      is a JSON string describing the per-element expression tree (see
+      OpenSearchNestedFieldRewriter.ExprTreeBuilder for the node shapes); the Rust UDF parses
+      and evaluates it per element, short-circuiting on the first match. Row count never
+      changes.
+      Args: (array_col: list<struct>, expr_json: string)
+    impls:
+      - args:
+          - { value: any1, name: "array_col" }
+          - { value: string, name: "expr_json" }
+        return: "boolean?"
   - name: regexp_like
     description: >-
       Regex containment match (boolean). datafusion-substrait resolves the

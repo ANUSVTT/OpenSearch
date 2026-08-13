@@ -62,19 +62,17 @@ public class FieldStorageResolver {
         boolean luceneAvailable = LUCENE_FORMAT.equals(primaryFormat)
             || indexMetadata.getSettings().getAsList(SECONDARY_DATA_FORMATS_SETTING).contains(LUCENE_FORMAT);
 
-        // A mapping-less index (created empty, never written to) declares no fields — it
-        // contributes nothing to the field-storage union. Aliases and index patterns legitimately
-        // span such indices next to populated ones (schema-side resolution skips them the same
-        // way), so treat "no mapping" / "no properties" as an empty field set rather than an error.
-        // A query that references only such indices fails upstream at Calcite validation with
-        // "table not found" (the schema builder yields no row type), never reaching this resolver.
         MappingMetadata mapping = indexMetadata.mapping();
-        Map<String, Object> properties = mapping == null ? null : (Map<String, Object>) mapping.sourceAsMap().get("properties");
+        if (mapping == null) {
+            throw new IllegalStateException("No mapping found for index [" + indexName + "]");
+        }
+        Map<String, Object> properties = (Map<String, Object>) mapping.sourceAsMap().get("properties");
+        if (properties == null) {
+            throw new IllegalStateException("No properties in mapping for index [" + indexName + "]");
+        }
 
         this.fieldStorage = new HashMap<>();
-        if (properties != null) {
-            populateFromProperties(properties, "", primaryFormat, luceneAvailable);
-        }
+        populateFromProperties(properties, "", primaryFormat, luceneAvailable);
     }
 
     @SuppressWarnings("unchecked")
@@ -92,6 +90,12 @@ public class FieldStorageResolver {
                     continue;
                 }
                 throw new IllegalStateException("Field [" + fieldName + "] has no type in mapping");
+            }
+            // POC nested (N1): skip "nested" type fields — they're stored as LIST<STRUCT> in Parquet
+            // and have no traditional field storage entry. The Calcite schema registers them as
+            // ARRAY(ROW(...)) which the planner handles separately via the UNNEST rewrite.
+            if ("nested".equals(fieldType)) {
+                continue;
             }
             this.fieldStorage.put(fieldName, resolveField(fieldName, fieldType, fieldProps, primaryFormat, luceneAvailable));
         }

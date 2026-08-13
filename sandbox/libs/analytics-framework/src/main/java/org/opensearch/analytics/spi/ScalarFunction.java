@@ -48,6 +48,18 @@ public enum ScalarFunction {
     EARLIEST(Category.COMPARISON, SqlKind.OTHER_FUNCTION),
     LATEST(Category.COMPARISON, SqlKind.OTHER_FUNCTION),
     CIDRMATCH(Category.COMPARISON, SqlKind.OTHER_FUNCTION),
+    // A single nested predicate ("B-type") delegated whole to one engine. The rewriter emits
+    // NESTED_ANY_MATCH(arrayCol, leafPath, op, value) for a lone predicate on a `nested` field of any
+    // depth; the Lucene backend serializes it to a NestedQueryBuilder (block-join) that matches PARENT
+    // (root) docs, so the result composes with scalar predicates at logical-row grain — no per-element
+    // child correlation is needed. See NestedAnyMatchSerializer / LuceneFilterDelegationHandle.
+    NESTED_ANY_MATCH(Category.COMPARISON, SqlKind.OTHER_FUNCTION),
+    // Generalization of NESTED_ANY_MATCH for a nested predicate whose leaf is NOT a keyword-equality that the
+    // Lucene secondary can serve — e.g. a numeric/range comparison, or a LIKE on a non-indexed leaf. The
+    // rewriter emits NESTED_ANY_MATCH_EXPR(arrayCol, jsonTree) where jsonTree encodes the (possibly deep)
+    // predicate; it is DataFusion-ONLY (evaluated by the nested_any_match_expr UDF over the Parquet
+    // LIST<STRUCT>), because the required values are not indexed in the Lucene secondary.
+    NESTED_ANY_MATCH_EXPR(Category.COMPARISON, SqlKind.OTHER_FUNCTION),
 
     // ── Logical connectives ─────────────────────────────────────────
     AND(Category.SCALAR, SqlKind.AND),
