@@ -207,20 +207,10 @@ pub async unsafe fn create_session_context(
     // Acquire memory budget from cached parquet metadata (zero I/O).
     // On cache miss (first query for this shard), skip — subsequent queries benefit.
     let phantom_reservation = try_acquire_budget(runtime, &global_pool, &shard_view, &query_config);
-    let budgeted_partitions = phantom_reservation
+    let effective_partitions = phantom_reservation
         .as_ref()
         .map(|b| b.target_partitions)
         .unwrap_or(query_config.target_partitions);
-    // Raise partitions to at least the number of parquet files (== Lucene segments) so each
-    // segment scans on its own partition, capped at the host's parallelism. The wire default is 4
-    // (datafusion_query_config.rs), which packs multiple segments into one partition and serializes
-    // their scan+filter via the per-partition stream `flatten()` (table_provider.rs). The memory
-    // budget only clamps DOWN (query_budget.rs), so this can only ADD parallelism when the budget
-    // allows it. `chain_ok` for the sort-aware path already requires target_partitions >= segments,
-    // so raising it can only ENABLE that path, never corrupt ordering.
-    let segment_count = shard_view.object_metas.len();
-    let host_parallelism = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
-    let effective_partitions = budgeted_partitions.max(segment_count).min(host_parallelism).max(1);
     let effective_batch_size = phantom_reservation
         .as_ref()
         .map(|b| b.batch_size)
