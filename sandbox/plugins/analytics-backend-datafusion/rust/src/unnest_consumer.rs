@@ -194,6 +194,14 @@ impl SubstraitConsumer for UnnestConsumer<'_> {
 /// `unnest_reshape:variants` and isthmus's positional refs both address the column as `variants`,
 /// not `products__u.variants`.
 fn build_reshaping_unnest(input_plan: LogicalPlan, levels: &[&str]) -> datafusion::common::Result<LogicalPlan> {
+    // [SCF-UNNEST] Each `level` is one nesting hop that gets exploded (project-dup + double-unnest +
+    // rename). N levels = N sequential explosions; the runtime row-multiplication (1 parent -> many
+    // child rows) is what dominates deep nested_agg latency — see input_rows/output_rows in [SCF-DF].
+    native_bridge_common::log_info!(
+        "[SCF-UNNEST] building reshaping unnest: {} level(s) exploded, path=[{}]",
+        levels.len(),
+        levels.join(", ")
+    );
     let mut builder = LogicalPlanBuilder::from(input_plan);
     for level in levels {
         // Alias for the duplicated array column: a name that cannot collide with a real column.

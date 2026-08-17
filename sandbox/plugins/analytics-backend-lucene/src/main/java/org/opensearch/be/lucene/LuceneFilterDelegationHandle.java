@@ -276,6 +276,10 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
 
     @Override
     public int collectDocs(int collectorKey, int minDoc, int maxDoc, MemorySegment out) {
+        // [PERF-COLL] time the whole collectDocs call (block-join scorer scan + docId->row translate +
+        // bitset build) so the RowSelection-build cost of the nested-predicate->DataFusion bridge is
+        // visible per invocation in the log. See project_mustang_latency.
+        long collStartNanos = System.nanoTime();
         ScorerHandle handle = scorersByCollectorKey.get(collectorKey);
         if (handle == null) {
             return -1;
@@ -348,12 +352,13 @@ final class LuceneFilterDelegationHandle implements FilterDelegationHandle {
                         handle.currentDoc = docId;
                     }
                     LOGGER.info(
-                        "[NAM-COLL] collectorKey={} matchedDocs={} skippedNoRow={} skippedOutOfWindow={} cardinality={} matches=[{}]",
+                        "[NAM-COLL] collectorKey={} matchedDocs={} skippedNoRow={} skippedOutOfWindow={} cardinality={} collect_ms={} matches=[{}]",
                         collectorKey,
                         matched,
                         skippedNoRow,
                         skippedOutOfWindow,
                         bits.cardinality(),
+                        (System.nanoTime() - collStartNanos) / 1_000_000L,
                         matchTrace
                     );
                 } catch (IOException exception) {

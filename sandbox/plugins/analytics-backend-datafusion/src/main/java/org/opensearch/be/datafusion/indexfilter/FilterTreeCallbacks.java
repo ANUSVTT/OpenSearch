@@ -141,6 +141,25 @@ public final class FilterTreeCallbacks {
             + ")";
     }
 
+    /**
+     * Release-path binding check. Unlike {@link #assertBindingExists}, a missing binding here is
+     * NOT a bug and must NOT assert: {@code releaseProvider}/{@code releaseCollector} are native
+     * teardown upcalls that can legitimately arrive AFTER {@link #unregister(long)} has removed the
+     * binding (the query's finally-block completes on one thread while the native engine is still
+     * draining its per-query resources on another). The resource being released is owned by the
+     * per-query {@link FilterDelegationHandle}, which is discarded together with the binding, so a
+     * release for an already-unregistered contextId has nothing left to free — a benign no-op.
+     *
+     * <p>Asserting here is actively harmful: the {@link AssertionError} is re-thrown from within an
+     * FFM upcall stub, crosses the native boundary, and aborts the whole JVM (upcallLinker), turning
+     * a harmless teardown race into a node crash under {@code -ea}. Production ({@code -ea} off) already
+     * treats this path as a silent no-op; this makes the dev/test build behave the same. Returns true
+     * iff the release should proceed (binding present with a live handle).
+     */
+    private static boolean bindingLiveForRelease(QueryBinding binding) {
+        return binding != null && binding.handle() != null;
+    }
+
     // ── Provider lifecycle (cold path, once per query) ────────────────
 
     /**
@@ -171,13 +190,13 @@ public final class FilterTreeCallbacks {
      */
     public static void releaseProvider(long contextId, int providerKey) {
         try {
+            // No assertBindingExists: a release arriving after unregister() is a benign teardown race,
+            // not a lifecycle bug — asserting would crash the JVM through the FFM stub. See
+            // bindingLiveForRelease().
             QueryBinding binding = BINDINGS.get(contextId);
-            assertBindingExists(binding, "releaseProvider", contextId);
-            if (binding != null && binding.handle() != null) {
+            if (bindingLiveForRelease(binding)) {
                 binding.handle().releaseProvider(providerKey);
             }
-        } catch (AssertionError e) {
-            throw e;
         } catch (Throwable throwable) {
             LOGGER.error(
                 new ParameterizedMessage("releaseProvider(contextId={}, providerKey={}) failed", contextId, providerKey),
@@ -265,13 +284,12 @@ public final class FilterTreeCallbacks {
      */
     public static void releaseCollector(long contextId, int collectorKey) {
         try {
+            // No assertBindingExists: see releaseProvider / bindingLiveForRelease — a release after
+            // unregister() is a benign teardown race, not a lifecycle bug.
             QueryBinding binding = BINDINGS.get(contextId);
-            assertBindingExists(binding, "releaseCollector", contextId);
-            if (binding != null && binding.handle() != null) {
+            if (bindingLiveForRelease(binding)) {
                 binding.handle().releaseCollector(collectorKey);
             }
-        } catch (AssertionError e) {
-            throw e;
         } catch (Throwable throwable) {
             LOGGER.error(
                 new ParameterizedMessage("releaseCollector(contextId={}, collectorKey={}) failed", contextId, collectorKey),

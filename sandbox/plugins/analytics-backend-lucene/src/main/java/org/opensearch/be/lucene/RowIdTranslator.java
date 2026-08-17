@@ -159,6 +159,26 @@ final class RowIdTranslator {
         return trimmed;
     }
 
+    /**
+     * Eagerly build + cache the {@code parentDocIds} array for every nested leaf of {@code reader}, so the
+     * first delegated nested query finds it warm instead of paying the O(maxDoc) {@code __row_id__} doc-values
+     * scan on the request path. This mirrors vanilla's {@code IndicesBitsetFilterCache.BitSetProducerWarmer},
+     * which eagerly loads the root/parent bitset on every new segment (default-on
+     * {@code index.load_fixed_bitset_filters_eagerly}) — the reason vanilla's nested cold latency ≈ warm.
+     * Best-effort: any per-leaf failure is swallowed (the query path rebuilds lazily as before). Intended to
+     * be called from a refresh hook on a background thread, never on the query path.
+     */
+    static void warmNestedCaches(org.apache.lucene.index.IndexReader reader) {
+        for (LeafReaderContext leaf : reader.leaves()) {
+            try {
+                forLeaf(leaf); // populates PARENT_DOC_IDS_CACHE for nested leaves; no-op/cheap for flat
+            } catch (Exception e) {
+                org.apache.logging.log4j.LogManager.getLogger(RowIdTranslator.class)
+                    .debug("[NAM-RIT] warm skipped for a leaf (will build lazily): {}", e.toString());
+            }
+        }
+    }
+
     boolean isNested() {
         return nested;
     }

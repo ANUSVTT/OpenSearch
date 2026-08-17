@@ -879,6 +879,34 @@ impl IndexedStream {
             m(&self.metrics.ffm_collector_calls),
             self.stream_start.map(|s| s.elapsed()).unwrap_or_default()
         );
+        // [SCF-TIMING] per-STAGE latency breakdown for this segment stream (all values ms). Surfaces
+        // the Time metrics already collected during poll so a reader can attribute the segment's wall
+        // time across stages without EXPLAIN ANALYZE: init_prefetch (open+first RG), prefetch_wait
+        // (blocked on async parquet IO), parquet_poll (decode+poll of row groups), build_mask/on_batch_mask
+        // (apply the Lucene RowSelection), mask_slice (slice matched rows), filter_batch (DF filter),
+        // projection_fixup (schema/name fixups), coalesce (re-batch), inter_poll_gap (idle between polls),
+        // elapsed_compute (total in-poll compute). Emitted once per segment stream at drop/finish.
+        let ms = |t: &Option<datafusion::physical_plan::metrics::Time>| {
+            t.as_ref().map(|x| x.value() as f64 / 1_000_000.0).unwrap_or(0.0)
+        };
+        log_info!(
+            "[SCF-TIMING] file={} init_prefetch={:.2} prefetch_wait={:.2} parquet_poll={:.2} \
+             build_mask={:.2} on_batch_mask={:.2} mask_slice={:.2} filter_batch={:.2} \
+             projection_fixup={:.2} coalesce={:.2} bloom_eval={:.2} inter_poll_gap={:.2} elapsed_compute={:.2}",
+            self.object_path.filename().unwrap_or("?"),
+            ms(&self.metrics.init_prefetch_time),
+            ms(&self.metrics.prefetch_wait_time),
+            ms(&self.metrics.parquet_poll_time),
+            ms(&self.metrics.build_mask_time),
+            ms(&self.metrics.on_batch_mask_time),
+            ms(&self.metrics.mask_slice_time),
+            ms(&self.metrics.filter_record_batch_time),
+            ms(&self.metrics.projection_fixup_time),
+            ms(&self.metrics.coalesce_time),
+            ms(&self.metrics.bloom_filter_eval_time),
+            ms(&self.metrics.inter_poll_gap),
+            ms(&self.metrics.elapsed_compute),
+        );
     }
 }
 

@@ -191,13 +191,28 @@ impl QueryStreamHandle {
         let plan = self.physical_plan.as_ref()?;
         let mut map = serde_json::Map::new();
         Self::collect_metrics(plan.as_ref(), &mut map);
-        // Include the physical plan display text
+        // Include the physical plan display text (merged, no metrics — kept for back-compat).
         let plan_text = datafusion::physical_plan::displayable(plan.as_ref())
             .indent(true)
             .to_string();
         map.insert(
             "physical_plan".to_string(),
             serde_json::Value::String(plan_text),
+        );
+        // PERF-PROFILE: per-operator annotated plan. set_show_metrics(true) tags EACH node with its
+        // own metrics=[elapsed_compute=…, output_rows=…, …] so latency can be attributed operator-by-
+        // operator (Scan vs Filter vs Unnest vs Aggregate vs Coalesce vs Exchange) instead of the
+        // merged bag above. Also logged so it lands in the server log for post-hoc analysis.
+        let plan_text_metrics = datafusion::physical_plan::display::DisplayableExecutionPlan::with_metrics(plan.as_ref())
+            .indent(true)
+            .to_string();
+        native_bridge_common::log_info!(
+            "[PERF-PLAN] per-operator annotated physical plan:\n{}",
+            plan_text_metrics
+        );
+        map.insert(
+            "physical_plan_metrics".to_string(),
+            serde_json::Value::String(plan_text_metrics),
         );
         serde_json::to_vec(&map).ok()
     }
