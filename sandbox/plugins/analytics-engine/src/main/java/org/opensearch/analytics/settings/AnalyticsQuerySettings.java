@@ -49,7 +49,13 @@ public final class AnalyticsQuerySettings {
                     "GREATER_THAN_OR_EQUAL",
                     "LESS_THAN",
                     "LESS_THAN_OR_EQUAL",
-                    "SARG_PREDICATE"
+                    "SARG_PREDICATE",
+                    // Nested-field predicates (NESTED_ANY_MATCH_EXPR) are DataFusion-only by
+                    // default: the fused call is already the authoritative, correctness-bearing
+                    // evaluation, so Lucene's block-join delegation here is purely a row-pruning
+                    // optimization, never required for correctness. Still overridable live via
+                    // this same Dynamic setting for A/B comparison if ever needed.
+                    "NESTED_ANY_MATCH_EXPR"
                 )
                 : List.of(),
             ScalarFunction::fromToken,
