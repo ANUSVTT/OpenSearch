@@ -11,8 +11,11 @@ package org.opensearch.composite;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.FieldInfo;
 import org.apache.lucene.index.LeafReaderContext;
+import org.apache.lucene.index.Terms;
+import org.apache.lucene.index.TermsEnum;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.NIOFSDirectory;
+import org.apache.lucene.util.BytesRef;
 import org.opensearch.action.admin.indices.create.CreateIndexResponse;
 import org.opensearch.action.admin.indices.stats.IndicesStatsResponse;
 import org.opensearch.cluster.metadata.IndexMetadata;
@@ -194,23 +197,17 @@ public class CompositeFieldCapabilityIT extends AbstractCompositeEngineIT {
         assertIndexCreationFails("test-completion", "field", "type=completion");
     }
 
-    public void testNestedFieldUnsupported() {
+    // Stale as of commit 4080f254e7c ("POC: nested doc ingestion through composite path"), which
+    // removed the rejection gate this test used to check for. Nested mapping creation on a
+    // composite index succeeds today (unrelated to the flat_object work below).
+    public void testNestedFieldSupported() {
         startCluster();
-        MapperParsingException ex = expectThrows(
-            MapperParsingException.class,
-            () -> client().admin()
-                .indices()
-                .prepareCreate("test-nested")
-                .setSettings(dfaSettings())
-                .setMapping("field", "type=nested")
-                .get()
-        );
-        assertTrue(ex.getMessage().contains("nested type is not supported with pluggable data format"));
+        assertIndexCreationSucceeds("test-nested", "field", "type=nested");
     }
 
-    public void testFlatObjectFieldUnsupported() {
+    public void testFlatObjectFieldSupported() {
         startCluster();
-        assertIndexCreationFails("test-flat-object", "field", "type=flat_object");
+        assertIndexCreationSucceeds("test-flat-object", "field", "type=flat_object");
     }
 
     public void testWildcardFieldUnsupported() {
@@ -730,6 +727,92 @@ public class CompositeFieldCapabilityIT extends AbstractCompositeEngineIT {
         assertTrue("Lucene should have 'f_text'", luceneFields.contains("f_text"));
     }
 
+    /**
+     * Tests that a flat_object field can be indexed on a composite index and verifies both the
+     * Lucene segment and the Parquet row carry its generated sub-fields ({@code ._value} for a bare
+     * leaf lookup, {@code ._valueAndPath} for a dotted-path lookup).
+     * <p>
+     * Does not use {@code prepareSearch} — search is not yet supported on composite/DFA indices at
+     * all (see {@code DataFormatAwareRestoreShallowSnapshotV2IT}'s notes), independent of this field
+     * type. Correctness is instead verified by reading the actual terms Lucene indexed and the
+     * actual values Parquet stored, the same structural-verification style every other test in this
+     * class already uses.
+     */
+    public void testFlatObjectFieldIndexAndVerify() throws Exception {
+        startCluster();
+        String indexName = "test-flat-object-verify";
+        CreateIndexResponse response = client().admin()
+            .indices()
+            .prepareCreate(indexName)
+            .setSettings(dfaSettings())
+            .setMapping("attrs", "type=flat_object")
+            .get();
+        assertTrue(response.isAcknowledged());
+        ensureGreen(indexName);
+
+        assertEquals(RestStatus.CREATED, client().prepareIndex(indexName).setSource("attrs", Map.of("link_kind", "a")).get().status());
+
+        client().admin().indices().prepareRefresh(indexName).get();
+        client().admin().indices().prepareFlush(indexName).get();
+
+        assertDocCount(indexName, 1);
+
+        Path luceneDir = getPrimaryShard(indexName).shardPath().resolveIndex();
+        Set<String> luceneFields = getLuceneFields(luceneDir);
+        assertTrue("Lucene should have 'attrs._value'", luceneFields.contains("attrs._value"));
+        assertTrue("Lucene should have 'attrs._valueAndPath'", luceneFields.contains("attrs._valueAndPath"));
+
+        // The bare leaf value is indexed as its own term (safe, single-leaf-path lookup).
+        assertTrue("attrs._value should contain term 'a'", getLuceneTerms(luceneDir, "attrs._value").contains("a"));
+        // The dotted-path form is indexed as "path=value" (safe, dotted-path lookup).
+        assertTrue(
+            "attrs._valueAndPath should contain term 'attrs.link_kind=a'",
+            getLuceneTerms(luceneDir, "attrs._valueAndPath").contains("attrs.link_kind=a")
+        );
+
+        Path parquetDir = getPrimaryShard(indexName).shardPath().getDataPath().resolve("parquet");
+        List<Map<String, Object>> parquetRows = readAllParquetRows(parquetDir, getPrimaryShard(indexName));
+        assertEquals(1, parquetRows.size());
+        assertEquals("a", parquetRows.get(0).get("attrs._value"));
+        assertEquals("attrs.link_kind=a", parquetRows.get(0).get("attrs._valueAndPath"));
+    }
+
+    /**
+     * Documents a genuine, newly-discovered limitation (not one of the 4 originally-scoped gaps):
+     * a flat_object document with more than one leaf value fails to index on a composite index,
+     * because {@code ParquetDocumentInput} rejects a second {@code addField} call for the same
+     * {@link org.opensearch.index.mapper.MappedFieldType} instance at the top level ("Cannot accept
+     * multiple values for field"). flat_object's whole design collapses arbitrarily many leaves onto
+     * just two shared field types ({@code ._value} / {@code ._valueAndPath}), so any document with 2+
+     * leaves anywhere in the object — the realistic case; nested's array-of-N-elements case included
+     * — hits this. Lucene has no such restriction (multi-valued fields are its native case), so this
+     * is Parquet-side only.
+     * <p>
+     * Fixing this for real needs a repeated/list Arrow column for these two field types (the same
+     * kind of multi-value column support {@code nested} already gets via {@code LIST<STRUCT>}, just
+     * for a flat list of scalars instead of structs) — out of scope for this change; tracked here as a
+     * loud, immediate failure rather than the silent data loss Gap 4 used to produce.
+     */
+    public void testFlatObjectFieldWithMultipleLeavesFailsOnParquet() throws Exception {
+        startCluster();
+        String indexName = "test-flat-object-multi-leaf";
+        client().admin().indices().prepareCreate(indexName).setSettings(dfaSettings()).setMapping("attrs", "type=flat_object").get();
+        ensureGreen(indexName);
+
+        MapperParsingException ex = expectThrows(
+            MapperParsingException.class,
+            () -> client().prepareIndex(indexName).setSource("attrs", Map.of("link_kind", "a", "spanId", "1")).get()
+        );
+        Throwable rootCause = ex;
+        while (rootCause.getCause() != null) {
+            rootCause = rootCause.getCause();
+        }
+        assertTrue(
+            "root cause should be the Parquet single-value-per-field restriction, got: " + rootCause,
+            rootCause.getMessage() != null && rootCause.getMessage().contains("Cannot accept multiple values for field")
+        );
+    }
+
     // === MAPPING UPDATE FAILURE TEST ===
 
     /**
@@ -855,5 +938,24 @@ public class CompositeFieldCapabilityIT extends AbstractCompositeEngineIT {
             }
         }
         return allFields;
+    }
+
+    /** Reads the actual indexed term text for a field, for structural verification without search. */
+    private Set<String> getLuceneTerms(Path luceneDir, String fieldName) throws IOException {
+        Set<String> allTerms = new HashSet<>();
+        try (Directory dir = NIOFSDirectory.open(luceneDir); DirectoryReader reader = DirectoryReader.open(dir)) {
+            for (LeafReaderContext ctx : reader.leaves()) {
+                Terms terms = ctx.reader().terms(fieldName);
+                if (terms == null) {
+                    continue;
+                }
+                TermsEnum termsEnum = terms.iterator();
+                BytesRef term;
+                while ((term = termsEnum.next()) != null) {
+                    allTerms.add(term.utf8ToString());
+                }
+            }
+        }
+        return allTerms;
     }
 }

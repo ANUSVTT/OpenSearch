@@ -11,6 +11,7 @@ package org.opensearch.parquet.fields.plugins;
 import org.opensearch.index.mapper.BinaryFieldMapper;
 import org.opensearch.index.mapper.BooleanFieldMapper;
 import org.opensearch.index.mapper.DateFieldMapper;
+import org.opensearch.index.mapper.FlatObjectFieldMapper;
 import org.opensearch.index.mapper.IpFieldMapper;
 import org.opensearch.index.mapper.KeywordFieldMapper;
 import org.opensearch.index.mapper.MatchOnlyTextFieldMapper;
@@ -83,6 +84,9 @@ public class CoreDataFieldPlugin implements ParquetFieldPlugin {
         fieldMap.put(KeywordFieldMapper.CONTENT_TYPE, new KeywordParquetField());
         fieldMap.put(IpFieldMapper.CONTENT_TYPE, new IpParquetField());
         fieldMap.put(MatchOnlyTextFieldMapper.CONTENT_TYPE, new TextParquetField());
+        // flat_object's leaf sub-fields (._value / ._valueAndPath) are plain keyword fields;
+        // this entry only covers the root type's own auxiliary path-parts write.
+        fieldMap.put(FlatObjectFieldMapper.CONTENT_TYPE, new KeywordParquetField());
     }
 
     private static void registerBinaryFields(Map<String, ParquetField> fieldMap) {

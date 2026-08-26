@@ -15,6 +15,7 @@ import org.apache.lucene.index.DocValuesType;
 import org.apache.lucene.index.IndexOptions;
 import org.apache.lucene.util.BytesRef;
 import org.opensearch.common.annotation.ExperimentalApi;
+import org.opensearch.index.mapper.FlatObjectFieldMapper;
 import org.opensearch.index.mapper.IdFieldMapper;
 import org.opensearch.index.mapper.KeywordFieldMapper;
 import org.opensearch.index.mapper.MatchOnlyTextFieldMapper;
@@ -62,6 +63,13 @@ public final class LuceneFieldFactoryRegistry {
         doc.add(new Field(ft.name(), value.toString(), lft));
     };
 
+    // Only used for flat_object's own root field (its auxiliary path-parts index, e.g.
+    // "attrs.link_kind"); the real leaf values live on its keyword-typed ._value/._valueAndPath
+    // sub-fields, which are already covered by KEYWORD_FACTORY above.
+    private static final LuceneFieldFactory FLAT_OBJECT_FACTORY = (doc, ft, value, lft) -> {
+        doc.add(new Field(ft.name(), value.toString(), lft));
+    };
+
     private static final LuceneFieldFactory ID_FIELD_FACTORY = (doc, ft, value, lft) -> {
         doc.add(new Field(ft.name(), new BytesRef((byte[]) value), ID_FIELD_TYPE));
     };
@@ -81,6 +89,7 @@ public final class LuceneFieldFactoryRegistry {
         register(TextFieldMapper.CONTENT_TYPE, TEXT_FACTORY);
         register(KeywordFieldMapper.CONTENT_TYPE, KEYWORD_FACTORY);
         register(MatchOnlyTextFieldMapper.CONTENT_TYPE, MATCH_ONLY_TEXT_FACTORY);
+        register(FlatObjectFieldMapper.CONTENT_TYPE, FLAT_OBJECT_FACTORY);
         registerMetaFields();
     }
 

@@ -17,6 +17,7 @@ import org.apache.logging.log4j.Logger;
 import org.opensearch.index.engine.dataformat.DocumentInput;
 import org.opensearch.index.mapper.DocumentMapper;
 import org.opensearch.index.mapper.FieldNamesFieldMapper;
+import org.opensearch.index.mapper.FlatObjectFieldMapper;
 import org.opensearch.index.mapper.IndexFieldMapper;
 import org.opensearch.index.mapper.KeywordFieldMapper;
 import org.opensearch.index.mapper.Mapper;
@@ -159,6 +160,14 @@ public final class ArrowSchemaBuilder {
                 KeywordFieldMapper.KeywordFieldType rawValueField = keywordFieldMapper.getRawValueFieldType();
                 fields.add(new Field(rawValueField.name(), parquetField.getFieldType(), null));
             }
+        }
+        // flat_object's real leaf data lives on two internal field types it owns (._value /
+        // ._valueAndPath), not on the root field added above (which only carries the auxiliary
+        // path-parts write). Both are plain keyword-shaped, so they reuse the same Arrow field type
+        // as the root's own ParquetField (KeywordParquetField, registered for "flat_object").
+        if (mapper instanceof FlatObjectFieldMapper flatObjectFieldMapper) {
+            fields.add(new Field(flatObjectFieldMapper.getValueFieldType().name(), parquetField.getFieldType(), null));
+            fields.add(new Field(flatObjectFieldMapper.getValueAndPathFieldType().name(), parquetField.getFieldType(), null));
         }
     }
 

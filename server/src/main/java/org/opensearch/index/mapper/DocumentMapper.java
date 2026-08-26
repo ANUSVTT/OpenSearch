@@ -382,6 +382,13 @@ public class DocumentMapper implements ToXContentFragment {
                     registry.assignCapabilities(rawValueFieldType, indexSettings);
                 }
             }
+            // flat_object's real leaf data lives on two internal field types it owns
+            // (._value / ._valueAndPath), not on fieldType() itself — same shape of problem as
+            // keyword's rawValueFieldType above.
+            if (mapper instanceof FlatObjectFieldMapper flatObjectFieldMapper) {
+                registry.assignCapabilities(flatObjectFieldMapper.getValueFieldType(), indexSettings);
+                registry.assignCapabilities(flatObjectFieldMapper.getValueAndPathFieldType(), indexSettings);
+            }
         }
         for (Mapper child : mapper) {
             assignCapabilitiesRecursive(child, registry, indexSettings);
