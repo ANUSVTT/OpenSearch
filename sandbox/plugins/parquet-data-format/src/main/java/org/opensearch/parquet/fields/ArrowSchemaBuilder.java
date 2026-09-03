@@ -21,7 +21,6 @@ import org.opensearch.index.mapper.Mapper;
 import org.opensearch.index.mapper.MapperService;
 import org.opensearch.index.mapper.NestedPathFieldMapper;
 import org.opensearch.index.mapper.SeqNoFieldMapper;
-import org.opensearch.index.mapper.SourceFieldMapper;
 import org.opensearch.parquet.fields.core.data.number.LongParquetField;
 
 import java.util.ArrayList;
@@ -91,10 +90,18 @@ public final class ArrowSchemaBuilder {
         }
     }
 
-    /** Package-visible so {@link NestedSchemaBuilder} applies the same metadata-field exclusions. */
+    /** Reads the {@code multi_value} declaration from the mapper's field type. */
+    private static boolean isMultiValued(Mapper mapper) {
+        return mapper instanceof FieldMapper fieldMapper && fieldMapper.fieldType().isMultiValued();
+    }
+
+    /**
+     * Package-visible so {@link NestedSchemaBuilder} applies the same metadata-field exclusions.
+     * {@code _source} is intentionally NOT excluded: update/delete requires the original raw
+     * source in Parquet, since columnar reconstruction of source is not lossless.
+     */
     static boolean isUnsupportedMetadataField(Mapper mapper) {
-        return mapper instanceof SourceFieldMapper
-            || mapper instanceof FieldNamesFieldMapper
+        return mapper instanceof FieldNamesFieldMapper
             || mapper instanceof IndexFieldMapper
             || mapper instanceof NestedPathFieldMapper
             || Objects.equals(mapper.typeName(), "_feature")
