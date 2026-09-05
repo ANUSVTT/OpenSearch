@@ -377,6 +377,8 @@ public class LuceneWriter implements Writer<LuceneDocumentInput> {
                         "RowIdMapping must not be provided when IndexSort is configured for writer generation [" + writerGeneration + "]"
                     );
                 }
+            } else {
+                indexWriter.getConfig().setMergePolicy(new LogByteSizeMergePolicy());
             }
 
             // Common path: forceMerge to 1 segment, commit, build FileInfos
